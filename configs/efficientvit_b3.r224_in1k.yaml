@@ -1,4 +1,4 @@
-# Train a tactile-image VAE with a timm MobileNetV4 encoder.
+# Train a tactile-image VAE with a timm EfficientViT encoder.
 # Run:
 #   python scripts/train_with_timm.py
 
@@ -7,9 +7,13 @@ data_dir: data
 eval_ratio: 0.2
 
 # Model
-model: mobilenetv4_conv_aa_large
-pretrained: false
-pretrained_path: "checkpoint/mobilenetv4_conv_aa_large.e230_r448_in12k_ft_in1k/model.safetensors"
+# timm pretrained_cfg:
+#   input_size: (3, 224, 224)
+#   num_features: 512
+#   forward_features output: (B, 512, 7, 7)
+model: efficientvit_b3.r224_in1k
+pretrained: true
+pretrained_path: "checkpoint/efficientvit_b3.r224_in1k/model.safetensors"
 initial_checkpoint: ""
 resume: ""
 no_resume_opt: false
@@ -56,7 +60,7 @@ experiment: ""
 # wandb
 log_wandb: true
 wandb_project: xense-tac-encoder
-wandb_name: "mobilenetv4_conv_aa_large"
+wandb_name: "efficientvit_b3_r224_in1k"
 wandb_log_images: true
 wandb_image_interval: 1
 wandb_num_images: 8

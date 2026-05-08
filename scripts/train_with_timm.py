@@ -434,7 +434,7 @@ def validate(
 
 def main() -> None:
     utils.setup_default_logging()
-    config_path = Path(__file__).resolve().parents[1] / "configs" / "mobilenetv4_conv_aa_large.yaml"
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "efficientvit_b3.r224_in1k.yaml"
     args, args_text = _load_config(config_path)
 
     device = _resolve_device(args.device)

@@ -1,19 +1,19 @@
-"""Pretty-print a CSV file as a terminal table."""
+"""Convert a CSV file into LLM-friendly plain text."""
 from __future__ import annotations
 
 import argparse
 import csv
-import shutil
+import json
 from pathlib import Path
 
 
 DEFAULT_MAX_ROWS = 50
-DEFAULT_MAX_COL_WIDTH = 40
-MIN_COL_WIDTH = 8
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Read a CSV file and print it as a formatted table.")
+    parser = argparse.ArgumentParser(
+        description="Read a CSV file and print its content as text suitable for LLM prompts."
+    )
     parser.add_argument("csv_file", type=Path, help="Path to the CSV file.")
     parser.add_argument(
         "--encoding",
@@ -37,10 +37,15 @@ def parse_args() -> argparse.Namespace:
         help=f"Maximum number of data rows to print. Default: {DEFAULT_MAX_ROWS}. Use 0 for all rows.",
     )
     parser.add_argument(
-        "--max-col-width",
-        type=int,
-        default=DEFAULT_MAX_COL_WIDTH,
-        help=f"Maximum width of each column. Default: {DEFAULT_MAX_COL_WIDTH}.",
+        "--format",
+        choices=("records", "markdown", "jsonl"),
+        default="records",
+        help="Output format. Default: records.",
+    )
+    parser.add_argument(
+        "--title",
+        default=None,
+        help="Optional title shown at the top of the output.",
     )
     return parser.parse_args()
 
@@ -67,7 +72,11 @@ def read_csv(path: Path, *, encoding: str, delimiter: str | None) -> list[list[s
         sample = f.read(4096)
         f.seek(0)
         reader = csv.reader(f, dialect=detect_dialect(sample, delimiter))
-        return [[cell.strip() for cell in row] for row in reader]
+        return [[clean_cell(cell) for cell in row] for row in reader]
+
+
+def clean_cell(value: str) -> str:
+    return " ".join(value.replace("\r", "\n").split())
 
 
 def normalize_rows(rows: list[list[str]]) -> list[list[str]]:
@@ -77,92 +86,125 @@ def normalize_rows(rows: list[list[str]]) -> list[list[str]]:
     return [row + [""] * (width - len(row)) for row in rows]
 
 
-def truncate_cell(value: str, width: int) -> str:
-    value = value.replace("\n", " ").replace("\r", " ")
-    if len(value) <= width:
-        return value
-    if width <= 3:
-        return "." * width
-    return value[: width - 3] + "..."
-
-
-def compute_widths(rows: list[list[str]], *, max_col_width: int, terminal_width: int) -> list[int]:
-    if not rows:
-        return []
-
-    column_count = len(rows[0])
-    widths = [
-        min(max_col_width, max(MIN_COL_WIDTH, max(len(row[idx]) for row in rows)))
-        for idx in range(column_count)
-    ]
-
-    table_overhead = 3 * column_count + 1
-    available = max(column_count * MIN_COL_WIDTH, terminal_width - table_overhead)
-    total = sum(widths)
-    while total > available and any(width > MIN_COL_WIDTH for width in widths):
-        widest_idx = max(range(column_count), key=widths.__getitem__)
-        widths[widest_idx] -= 1
-        total -= 1
-    return widths
-
-
-def border(widths: list[int], left: str = "+", fill: str = "-", joint: str = "+", right: str = "+") -> str:
-    return left + joint.join(fill * (width + 2) for width in widths) + right
-
-
-def format_row(row: list[str], widths: list[int]) -> str:
-    cells = [
-        f" {truncate_cell(value, width):<{width}} "
-        for value, width in zip(row, widths, strict=True)
-    ]
-    return "|" + "|".join(cells) + "|"
-
-
-def format_table(rows: list[list[str]], *, no_header: bool, max_rows: int, max_col_width: int) -> str:
+def split_header_and_rows(rows: list[list[str]], *, no_header: bool) -> tuple[list[str], list[list[str]]]:
     rows = normalize_rows(rows)
     if not rows:
-        return "(empty CSV)"
-
+        return [], []
     if no_header:
-        header = [f"col_{idx + 1}" for idx in range(len(rows[0]))]
-        data_rows = rows
-    else:
-        header = rows[0]
-        data_rows = rows[1:]
+        return [f"column_{idx + 1}" for idx in range(len(rows[0]))], rows
+    return rows[0], rows[1:]
 
-    shown_rows = data_rows if max_rows == 0 else data_rows[:max_rows]
-    table_rows = [header, *shown_rows]
-    terminal_width = shutil.get_terminal_size(fallback=(120, 24)).columns
-    widths = compute_widths(table_rows, max_col_width=max(max_col_width, MIN_COL_WIDTH), terminal_width=terminal_width)
 
+def rows_to_dicts(header: list[str], rows: list[list[str]]) -> list[dict[str, str]]:
+    seen: dict[str, int] = {}
+    keys = []
+    for idx, name in enumerate(header):
+        key = name or f"column_{idx + 1}"
+        if key in seen:
+            seen[key] += 1
+            key = f"{key}_{seen[key]}"
+        else:
+            seen[key] = 1
+        keys.append(key)
+    return [dict(zip(keys, row, strict=True)) for row in rows]
+
+
+def summarize(path: Path, header: list[str], rows: list[list[str]], shown_count: int, title: str | None) -> list[str]:
+    hidden = max(len(rows) - shown_count, 0)
     lines = [
-        border(widths),
-        format_row(header, widths),
-        border(widths, fill="="),
+        title or "CSV content",
+        f"source: {path}",
+        f"columns ({len(header)}): {', '.join(header)}",
+        f"total data rows: {len(rows)}",
+        f"shown data rows: {shown_count}",
     ]
-    lines.extend(format_row(row, widths) for row in shown_rows)
-    lines.append(border(widths))
+    if hidden:
+        lines.append(f"hidden data rows: {hidden} (use --max-rows 0 to show all)")
+    return lines
 
-    hidden = len(data_rows) - len(shown_rows)
-    lines.append(f"rows: {len(data_rows)}" + (f" ({hidden} hidden; use --max-rows 0 to show all)" if hidden > 0 else ""))
-    lines.append(f"columns: {len(header)}")
+
+def format_records(path: Path, header: list[str], rows: list[list[str]], *, max_rows: int, title: str | None) -> str:
+    shown_rows = rows if max_rows == 0 else rows[:max_rows]
+    records = rows_to_dicts(header, shown_rows)
+    lines = summarize(path, header, rows, len(shown_rows), title)
+    lines.append("")
+    lines.append("Rows:")
+    if not records:
+        lines.append("(no data rows)")
+        return "\n".join(lines)
+
+    for idx, record in enumerate(records, start=1):
+        lines.append(f"Row {idx}:")
+        for key, value in record.items():
+            lines.append(f"- {key}: {value}")
+        if idx != len(records):
+            lines.append("")
     return "\n".join(lines)
+
+
+def escape_markdown_cell(value: str) -> str:
+    return value.replace("|", "\\|")
+
+
+def format_markdown(path: Path, header: list[str], rows: list[list[str]], *, max_rows: int, title: str | None) -> str:
+    shown_rows = rows if max_rows == 0 else rows[:max_rows]
+    lines = summarize(path, header, rows, len(shown_rows), title)
+    lines.append("")
+    if not header:
+        lines.append("(empty CSV)")
+        return "\n".join(lines)
+
+    escaped_header = [escape_markdown_cell(value) for value in header]
+    lines.append("| " + " | ".join(escaped_header) + " |")
+    lines.append("| " + " | ".join("---" for _ in header) + " |")
+    for row in shown_rows:
+        lines.append("| " + " | ".join(escape_markdown_cell(value) for value in row) + " |")
+    return "\n".join(lines)
+
+
+def format_jsonl(path: Path, header: list[str], rows: list[list[str]], *, max_rows: int, title: str | None) -> str:
+    shown_rows = rows if max_rows == 0 else rows[:max_rows]
+    lines = summarize(path, header, rows, len(shown_rows), title)
+    lines.append("")
+    lines.extend(json.dumps(record, ensure_ascii=False) for record in rows_to_dicts(header, shown_rows))
+    if len(lines) == 6:
+        lines.append("(no data rows)")
+    return "\n".join(lines)
+
+
+def format_csv_text(
+    path: Path,
+    rows: list[list[str]],
+    *,
+    no_header: bool,
+    max_rows: int,
+    output_format: str,
+    title: str | None,
+) -> str:
+    header, data_rows = split_header_and_rows(rows, no_header=no_header)
+    if output_format == "records":
+        return format_records(path, header, data_rows, max_rows=max_rows, title=title)
+    if output_format == "markdown":
+        return format_markdown(path, header, data_rows, max_rows=max_rows, title=title)
+    if output_format == "jsonl":
+        return format_jsonl(path, header, data_rows, max_rows=max_rows, title=title)
+    raise ValueError(f"Unsupported output format: {output_format}")
 
 
 def main() -> None:
     args = parse_args()
     if args.max_rows < 0:
         raise SystemExit("--max-rows must be >= 0")
-    if args.max_col_width < 1:
-        raise SystemExit("--max-col-width must be >= 1")
 
     rows = read_csv(args.csv_file, encoding=args.encoding, delimiter=args.delimiter)
     print(
-        format_table(
+        format_csv_text(
+            args.csv_file,
             rows,
             no_header=args.no_header,
             max_rows=args.max_rows,
-            max_col_width=args.max_col_width,
+            output_format=args.format,
+            title=args.title,
         )
     )
 
