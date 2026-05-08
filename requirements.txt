@@ -1,8 +1,29 @@
-torch
-torchvision
-pillow
-numpy
-pytorch-msssim
-transformers
-PyYAML
-wandb
+# Curated from conda env: eval-encoder (Python 3.12.13).
+# This keeps project-level Python dependencies only. Conda runtime packages,
+# ROS packages, CUDA component wheels, and pip transitive dependencies are
+# intentionally not frozen here.
+
+# Core training / evaluation
+torch==2.10.0
+torchvision==0.25.0
+numpy==2.2.6
+pillow==12.1.1
+PyYAML==6.0.3
+tqdm==4.67.3
+tyro==1.0.13
+safetensors==0.7.0
+wandb==0.24.2
+timm @ git+https://github.com/rwightman/pytorch-image-models.git@6a928a1a29cb3f492cf1f8f475f3579e7ef45fa1
+
+# Utility script: src/utils/sample_mp4_rgb_frames.py
+lerobot==0.5.1
+torchcodec==0.10.0
+av==15.1.0
+
+# Optional code paths:
+# - Enable SSIM loss with w_ssim > 0:
+#   pytorch-msssim
+# - Use src/utils/normalize.py. The current env has pydantic, but is missing
+#   numpydantic, so this utility path is not fully covered by eval-encoder.
+#   pydantic==2.13.3
+#   numpydantic

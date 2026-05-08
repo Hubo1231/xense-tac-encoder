@@ -1,0 +1,28 @@
+.vscode/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Keep directory trees, but ignore generated data/checkpoint/output files.
+data/**
+!data/
+!data/**/
+!data/**/.gitkeep
+
+checkpoint/**
+!checkpoint/
+!checkpoint/**/
+!checkpoint/**/.gitkeep
+
+outputs/**
+!outputs/
+!outputs/**/
+!outputs/**/.gitkeep
+
+# Existing config/output path uses this misspelled directory name.
+outpus/**
+!outpus/
+!outpus/**/
+!outpus/**/.gitkeep

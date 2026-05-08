@@ -4,7 +4,6 @@ from __future__ import annotations
 import dataclasses
 import random
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -13,14 +12,10 @@ import torch
 # Allow `python scripts/train.py` to run from the repository root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import model.config as _config
-from model.factory import (
-    build_dataloader_from_config,
-    build_loss_from_config,
-    build_model_from_config,
-    build_optimizer_from_config,
-    resolve_device,
-)
+import src.training.config as _config
+from src.training.data_loader import create_torch_data_loader
+from src.training.factory import resolve_device
+from src.training.losses import LossWeights
 
 try:
     import numpy as np
@@ -33,12 +28,8 @@ except ImportError:  # pragma: no cover
     wandb = None
 
 
-@dataclass
-class TrainResult:
-    checkpoint: str | None
-    epochs: int
-    global_step: int
-    last_losses: dict[str, float]
+def _config_as_dict(config: _config.TrainConfig) -> dict[str, Any]:
+    return dataclasses.asdict(config)
 
 
 def set_seed(seed: int) -> None:
@@ -73,16 +64,17 @@ def save_checkpoint(
     path: str | Path,
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    config: Mapping[str, Any],
+    config: _config.TrainConfig,
     epoch: int,
     global_step: int,
 ) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    config_dict = _config_as_dict(config)
     torch.save(
         {
-            "config": dict(config),
-            "model": config.get("model", {}),
+            "config": config_dict,
+            "model": dataclasses.asdict(config.model),
             "epoch": epoch,
             "global_step": global_step,
             "state_dict": model.state_dict(),
@@ -108,70 +100,68 @@ def load_checkpoint(
     return ckpt if isinstance(ckpt, dict) else {"state_dict": state}
 
 
-def _wandb_config(config: _config.TrainConfig | Mapping[str, Any], config_dict: Mapping[str, Any]) -> dict[str, Any]:
-    if dataclasses.is_dataclass(config) and not isinstance(config, type):
-        return dataclasses.asdict(config)
-    return dict(config_dict)
+def _build_optimizer(model: torch.nn.Module, config: _config.TrainConfig) -> torch.optim.Optimizer:
+    name = config.optimizer.name.lower()
+    params = {
+        "lr": config.optimizer.lr,
+        "weight_decay": config.optimizer.weight_decay,
+    }
+    if name == "adamw":
+        return torch.optim.AdamW(model.parameters(), **params)
+    if name == "adam":
+        return torch.optim.Adam(model.parameters(), **params)
+    if name == "sgd":
+        return torch.optim.SGD(model.parameters(), **params)
+    raise KeyError(f"未知 optimizer: {name}; 可选: adamw, adam, sgd")
 
 
-def init_wandb(config: _config.TrainConfig | Mapping[str, Any], config_dict: Mapping[str, Any]):
-    wandb_cfg = config_dict.get("wandb", {})
-    train_cfg = config_dict.get("training", {})
-    enabled = bool(
-        wandb_cfg.get("enabled", False)
-        or train_cfg.get("wandb_enabled", False)
-        or config_dict.get("wandb_enabled", False)
-    )
-    if not enabled:
+def _attach_loss_weights(model: torch.nn.Module, config: _config.TrainConfig) -> None:
+    if hasattr(model, "loss_weights"):
+        model.loss_weights = LossWeights(
+            mse=config.loss.mse,
+            grad=config.loss.grad,
+            kld=config.loss.kld,
+            ssim=config.loss.ssim,
+        )
+
+
+def init_wandb(config: _config.TrainConfig):
+    if not config.wandb_enabled:
         return None
     if wandb is None:
         raise ImportError("启用 wandb 需要 `pip install wandb`")
 
-    project = wandb_cfg.get("project") or config_dict.get("project_name", "eval-tactile-encoder")
-    name = wandb_cfg.get("name") or config_dict.get("exp_name") or config_dict.get("name")
-    mode = wandb_cfg.get("mode")
-    tags = wandb_cfg.get("tags")
-    run_id = wandb_cfg.get("id")
-    resume = wandb_cfg.get("resume")
-
     return wandb.init(
-        project=project,
-        name=name,
-        config=_wandb_config(config, config_dict),
-        mode=mode,
-        tags=tags,
-        id=run_id,
-        resume=resume,
+        project=config.project_name,
+        name=config.resolved_exp_name,
+        config=_config_as_dict(config),
+        mode=config.wandb_mode,
     )
 
 
-def main(config: _config.TrainConfig) -> TrainResult:
-    config_dict = _config.to_dict(config)
-    seed = config_dict.get("seed")
-    if seed is not None:
-        set_seed(int(seed))
+def main(config: _config.TrainConfig):
 
-    train_cfg = config_dict.get("training", {})
-    device = resolve_device(config_dict, "training")
-    loader = build_dataloader_from_config(config_dict, "train", device=device)
-    model = build_model_from_config(config_dict).to(device)
-    loss_fn = build_loss_from_config(config_dict)
-    optimizer = build_optimizer_from_config(model, config_dict)
-    wandb_run = init_wandb(config, config_dict)
+    set_seed(config.seed)
 
-    epochs = int(train_cfg.get("epochs", 20))
-    log_every = int(train_cfg.get("log_every", 20))
-    output = train_cfg.get("output")
+    device = resolve_device({"device": config.device}, "training")
+    data_loader = create_torch_data_loader(config, split="train", pin_memory=device.type == "cuda")
+    model = config.model.create(device=device)
+    _attach_loss_weights(model, config)
+    optimizer = _build_optimizer(model, config)
+    wandb_run = init_wandb(config)
+
+    epochs = int(config.epochs)
+    log_every = int(config.log_interval)
+    output = str(config.checkpoint_path)
     global_step = 0
     last_losses: dict[str, float] = {}
 
     try:
         model.train()
         for epoch in range(1, epochs + 1):
-            for batch in loader:
+            for batch in data_loader:
                 batch = _move_batch(batch, device)
-                outputs = model(batch)
-                losses = loss_fn(outputs, batch)
+                losses = model.compute_loss(batch)
 
                 optimizer.zero_grad(set_to_none=True)
                 losses["total"].backward()
@@ -190,7 +180,7 @@ def main(config: _config.TrainConfig) -> TrainResult:
                 global_step += 1
 
         if output:
-            save_checkpoint(output, model, optimizer, config_dict, epoch=epochs, global_step=global_step)
+            save_checkpoint(output, model, optimizer, config, epoch=epochs, global_step=global_step)
             print(f"model saved to {output}")
             if wandb_run is not None:
                 wandb.save(str(output), base_path=str(Path(output).parent))
@@ -201,12 +191,6 @@ def main(config: _config.TrainConfig) -> TrainResult:
             for key, value in last_losses.items():
                 wandb.summary[f"last/{key}"] = value
 
-        return TrainResult(
-            checkpoint=str(output) if output else None,
-            epochs=epochs,
-            global_step=global_step,
-            last_losses=last_losses,
-        )
     finally:
         if wandb_run is not None:
             wandb.finish()

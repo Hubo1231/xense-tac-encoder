@@ -1,5 +1,6 @@
 """Config-driven evaluation entrypoint."""
 import argparse
+import dataclasses
 import json
 import sys
 from copy import deepcopy
@@ -8,15 +9,15 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tactile_encoder.config import load_config, set_by_path
-from tactile_encoder.evaluation import evaluate_from_config
-from tactile_encoder.evaluator import format_results_table
-from tactile_encoder.models import available_backbones
+from src.models import available_backbones
+from src.training.config import get_config, load_config, set_by_path
+from src.utils.evaluation import evaluate_from_config
+from src.utils.evaluator import format_results_table
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--config", default="configs/vae_resnet18.yaml", help="YAML config path")
+    p.add_argument("--config", default="vae_resnet18", help="Named preset or YAML config path")
     p.add_argument(
         "--set",
         dest="overrides",
@@ -45,15 +46,15 @@ def parse_args() -> argparse.Namespace:
 def apply_legacy_args(config: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     mapping = {
         "checkpoint": "evaluation.checkpoint",
-        "data": "data.eval.root",
+        "data": "data.root",
         "image_size": "data.image_size",
         "latent_dim": "model.params.latent_dim",
         "batch_size": "dataloader.eval.batch_size",
         "num_workers": "dataloader.eval.num_workers",
         "max_batches": "evaluation.max_batches",
         "device": "evaluation.device",
-        "w_grad": "loss.params.grad",
-        "w_kld": "loss.params.kld",
+        "w_grad": "loss.grad",
+        "w_kld": "loss.kld",
         "output_json": "evaluation.output_json",
     }
     for arg_name, config_path in mapping.items():
@@ -66,9 +67,74 @@ def apply_legacy_args(config: dict[str, Any], args: argparse.Namespace) -> dict[
     return config
 
 
+def _config_to_eval_dict(config) -> dict[str, Any]:
+    data = config.data.create(config.model)
+    model_name = "tactile_vae" if config.model.model_variant == "vae" else "tactile_autoencoder"
+    return {
+        "name": config.name,
+        "project_name": config.project_name,
+        "seed": config.seed,
+        "device": config.device,
+        "model": {
+            "name": model_name,
+            "params": {
+                "backbone_name": "mobilenetv4_conv_aa_large",
+                "latent_dim": config.model.latent_dim,
+                "pretrained": config.model.pretrained,
+                "decoder_hidden_channels": config.model.decoder_hidden_channels,
+                "decoder_hidden_spatial": config.model.decoder_hidden_spatial,
+            },
+        },
+        "loss": dataclasses.asdict(config.loss),
+        "data": {
+            "root": data.root,
+            "image_size": data.image_size,
+            "eval_ratio": data.eval_ratio,
+            "seed": data.seed,
+        },
+        "dataloader": {
+            "train": {
+                "batch_size": config.batch_size,
+                "shuffle": True,
+                "num_workers": config.num_workers,
+                "drop_last": True,
+            },
+            "eval": {
+                "batch_size": config.eval_batch_size,
+                "shuffle": False,
+                "num_workers": config.num_workers,
+                "drop_last": False,
+            },
+        },
+        "optimizer": dataclasses.asdict(config.optimizer),
+        "evaluation": {
+            "device": config.device,
+            "checkpoint": config.evaluation.checkpoint or str(config.checkpoint_path),
+            "max_batches": config.evaluation.max_batches,
+            "measure_latency_only_encoder": config.evaluation.measure_latency_only_encoder,
+            "output_json": config.evaluation.output_json or str(config.eval_output_path),
+        },
+    }
+
+
+def _load_eval_config(config: str, overrides: list[str]) -> dict[str, Any]:
+    path = Path(config)
+    if config in {name for name in get_config.__globals__["_CONFIGS_DICT"]}:
+        loaded = _config_to_eval_dict(get_config(config))
+    elif path.exists():
+        loaded = load_config(path)
+        loaded.setdefault("name", path.stem)
+    else:
+        loaded = _config_to_eval_dict(get_config(config))
+    for item in overrides:
+        key, raw_value = item.split("=", 1)
+        set_by_path(loaded, key, json.loads(raw_value) if raw_value[:1] in "[{\"" else raw_value)
+    return loaded
+
+
 def main() -> None:
     args = parse_args()
-    base_config = apply_legacy_args(load_config(args.config, args.overrides), args)
+    base_config = apply_legacy_args(_load_eval_config(args.config, args.overrides), args)
     backbones = args.backbones or [base_config.get("model", {}).get("params", {}).get("backbone_name", "resnet18")]
     if len(backbones) > 1 and args.checkpoint:
         raise SystemExit("--checkpoint 模式下只允许指定一个 backbone")
