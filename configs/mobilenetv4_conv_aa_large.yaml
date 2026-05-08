@@ -3,13 +3,13 @@
 #   python scripts/train_with_timm.py
 
 # Dataset
-data_dir: /home/li/hubo/xense-tac-encoder/data
+data_dir: data
 eval_ratio: 0.2
 
 # Model
 model: mobilenetv4_conv_aa_large
 pretrained: false
-pretrained_path: "/home/li/hubo/xense-tac-encoder/checkpoint/mobilenetv4_conv_aa_large.e230_r448_in12k_ft_in1k/model.safetensors"
+pretrained_path: "checkpoint/mobilenetv4_conv_aa_large.e230_r448_in12k_ft_in1k/model.safetensors"
 initial_checkpoint: ""
 resume: ""
 no_resume_opt: false
@@ -50,7 +50,7 @@ workers: 4
 seed: 42
 log_interval: 20
 val_interval: 1
-output: /home/li/hubo/xense-tac-encoder/outputs
+output: outputs
 experiment: ""
 
 # wandb

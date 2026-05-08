@@ -11,10 +11,7 @@ data/**
 !data/**/
 !data/**/.gitkeep
 
-checkpoint/**
-!checkpoint/
-!checkpoint/**/
-!checkpoint/**/.gitkeep
+checkpoint/
 
 outputs/**
 !outputs/
@@ -26,3 +23,5 @@ outpus/**
 !outpus/
 !outpus/**/
 !outpus/**/.gitkeep
+
+.codex
