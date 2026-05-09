@@ -5,11 +5,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Keep directory trees, but ignore generated data/checkpoint/output files.
-data/**
-!data/
-!data/**/
-!data/**/.gitkeep
+# Ignore local datasets and generated artifacts.
+data/
 
 checkpoint/
 
