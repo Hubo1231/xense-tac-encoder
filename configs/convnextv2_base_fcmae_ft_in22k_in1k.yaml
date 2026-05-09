@@ -10,10 +10,9 @@ eval_ratio: 0.2
 # timm pretrained_cfg:
 #   input_size: (3, 224, 224)
 #   num_features: 1024
-#   forward_features output: (B, 1024, 7, 7)
+#   model(x) embedding output with num_classes=0: (B, 1024)
 model: convnextv2_base.fcmae_ft_in22k_in1k
 pretrained: true
-features_only: false
 pretrained_path: "checkpoint/convnextv2_base_fcmae_ft_in22k_in1k/model.safetensors"
 initial_checkpoint: ""
 resume: ""

@@ -1,6 +1,7 @@
 """模型构建入口。"""
 from typing import Callable, Dict
 
+import torch
 import torch.nn as nn
 
 from .backbones import available_backbones, build_backbone
@@ -10,6 +11,22 @@ from src.training.losses import LossWeights
 
 ModelFactory = Callable[..., nn.Module]
 _MODEL_REGISTRY: Dict[str, ModelFactory] = {}
+
+
+class FeatureMapToEmbedding(nn.Module):
+    """Convert a feature-map backbone output to a flat image embedding."""
+
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        feat = self.model(x)
+        if feat.ndim == 4:
+            return feat.mean(dim=(-2, -1))
+        if feat.ndim == 2:
+            return feat
+        raise ValueError(f"Backbone must return a feature map or embedding, got shape {tuple(feat.shape)}.")
 
 
 def register_model(name: str) -> Callable[[ModelFactory], ModelFactory]:
@@ -37,7 +54,7 @@ def build_tactile_vae(
     if isinstance(loss_weights, dict):
         loss_weights = LossWeights(**loss_weights)
     return TactileVAE(
-        encoder_backbone=backbone,
+        encoder_backbone=FeatureMapToEmbedding(backbone),
         feature_dim=feat_dim,
         latent_dim=latent_dim,
         decoder_hidden_channels=decoder_hidden_channels,

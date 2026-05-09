@@ -10,13 +10,9 @@ eval_ratio: 0.2
 # timm pretrained_cfg:
 #   input_size: (3, 224, 224)
 #   num_features: 2048
-#   forward_features output: (B, 2048, 7, 7)
-#
-# ResNet forward_features already returns a 4D feature map, so features_only
-# is not needed for the current TactileVAE path.
+#   model(x) embedding output with num_classes=0: (B, 2048)
 model: resnet50.a1_in1k
 pretrained: true
-features_only: false
 pretrained_path: "checkpoint/resnet50_a1_in1k/model.safetensors"
 initial_checkpoint: ""
 resume: ""
@@ -64,7 +60,7 @@ experiment: ""
 # wandb
 log_wandb: true
 wandb_project: xense-tac-encoder
-wandb_name: "resnet50_a1_in1k"
+wandb_name: "resnet50_a1_in1k_2"
 wandb_log_images: true
 wandb_image_interval: 1
 wandb_num_images: 8

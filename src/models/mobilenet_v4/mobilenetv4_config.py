@@ -29,6 +29,15 @@ class _MobileNetV4Features(nn.Module):
         return self.model.forward_features(x)
 
 
+class _MobileNetV4Embedding(nn.Module):
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+
 @dataclasses.dataclass(frozen=True)
 class Mobilenetv4Config(BaseModelConfig):
     """Config for training MobileNetV4 as the encoder in a reconstruction task."""
@@ -85,6 +94,8 @@ class Mobilenetv4Config(BaseModelConfig):
             drop_path_rate=self.drop_path_rate,
             device=torch.device(device) if device is not None else None,
         )
+        if self.model_variant == "vae":
+            return _MobileNetV4Embedding(model), model.num_features, self.decoder_hidden_spatial or 7
         return _MobileNetV4Features(model), model.num_features, self.decoder_hidden_spatial or 7
 
     def create(self, *, device: str | torch.device | None = None) -> BaseModel:

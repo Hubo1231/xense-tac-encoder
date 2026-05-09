@@ -7,11 +7,20 @@
   * timm.optim.create_optimizer_v2 - 优化器
   * timm.scheduler.create_scheduler_v2 - 学习率调度
 
+每个 backbone 都通过 timm 的官方调用方式得到 (B, num_features) 的图像
+embedding：
+
+    model = timm.create_model(name, pretrained=True, num_classes=0)
+    data_config = timm.data.resolve_model_data_config(model)
+    transforms = timm.data.create_transform(**data_config, is_training=False)
+    embedding = model(transforms(img).unsqueeze(0))  # (B, C)
+
 运行：
-    python scripts/train_with_timm.py
+    python scripts/train_with_timm.py --config configs/vit_base_patch16_dinov3_lvd1689m.yaml
 """
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -56,17 +65,28 @@ except ImportError:
 
 _logger = logging.getLogger("train_with_timm")
 
+DEFAULT_CONFIG = "configs/vit_base_patch16_dinov3_lvd1689m.yaml"
+
 
 REQUIRED_KEYS: tuple[str, ...] = (
+    # Dataset
     "data_dir", "eval_ratio",
-    "model", "in_chans",
-    "latent_dim", "decoder_hidden_channels",
+    # Model — every backbone goes through the standard
+    #   model(transforms(img).unsqueeze(0))  ->  (B, num_features)
+    # path with num_classes=0 hardcoded; no features_only switch.
+    "model", "pretrained", "pretrained_path",
+    "initial_checkpoint", "resume", "no_resume_opt",
+    "in_chans", "latent_dim", "decoder_hidden_channels",
+    # Loss
     "w_mse", "w_grad", "w_kld", "w_ssim",
+    # Device
     "device",
-    "opt", "lr", "weight_decay",
-    "sched", "epochs", "warmup_epochs", "warmup_lr", "min_lr",
+    # Optimizer / scheduler
+    "opt", "lr", "weight_decay", "clip_grad",
+    "sched", "epochs", "warmup_epochs", "warmup_lr", "min_lr", "cooldown_epochs",
+    # Loader / logging
     "batch_size", "workers", "seed",
-    "log_interval", "val_interval", "output",
+    "log_interval", "val_interval", "output", "experiment",
     "log_wandb",
 )
 
@@ -97,23 +117,6 @@ def _load_config(config_path: Path) -> tuple[SimpleNamespace, str]:
     return SimpleNamespace(**config), args_text
 
 
-class TimmFeatureEncoder(nn.Module):
-    """Wrap a timm model so VAE sees only unpooled feature maps."""
-
-    def __init__(self, model: nn.Module, *, features_only: bool = False) -> None:
-        super().__init__()
-        self.model = model
-        self.features_only = features_only
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not self.features_only:
-            return self.model.forward_features(x)
-        features = self.model(x)
-        if not isinstance(features, (list, tuple)) or not features:
-            raise TypeError("features_only timm model must return a non-empty list/tuple of feature maps.")
-        return features[-1]
-
-
 def _resolve_device(name: str) -> torch.device:
     if name == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -121,39 +124,54 @@ def _resolve_device(name: str) -> torch.device:
 
 
 def _build_timm_backbone(args: SimpleNamespace) -> nn.Module:
-    factory_kwargs: dict[str, Any] = {}
-    features_only = bool(getattr(args, "features_only", False))
-    if args.pretrained_path:
-        factory_kwargs["pretrained_cfg_overlay"] = {"file": args.pretrained_path, "num_classes": -1}
-    backbone = create_model(
-        args.model,
-        pretrained=args.pretrained or bool(args.pretrained_path),
-        features_only=features_only,
-        in_chans=args.in_chans,
-        num_classes=0,
-        **factory_kwargs,
-        **(getattr(args, "model_kwargs", {}) or {}),
+    """Create a timm backbone exactly as in the official example::
+
+        model = timm.create_model(name, pretrained=True, num_classes=0)
+        output = model(transforms(img).unsqueeze(0))  # (B, num_features)
+
+    ``num_classes`` is hardcoded to 0 so timm strips the classifier head and
+    every supported backbone returns a flat ``(B, num_features)`` embedding.
+    """
+    pretrained_path = getattr(args, "pretrained_path", "") or ""
+
+    factory_kwargs: dict[str, Any] = {
+        "pretrained": bool(args.pretrained) or bool(pretrained_path),
+        "num_classes": 0,
+        "in_chans": int(args.in_chans),
+    }
+    if pretrained_path:
+        factory_kwargs["pretrained_cfg_overlay"] = {
+            "file": pretrained_path,
+            "num_classes": -1,  # don't try to remap classifier weights — we have no head.
+        }
+
+    extra = dict(getattr(args, "model_kwargs", {}) or {})
+    return create_model(args.model, **factory_kwargs, **extra)
+
+
+def _resolve_embedding_dim(encoder: nn.Module) -> int:
+    """Read the ``model(x) -> (B, C)`` embedding dim from timm metadata.
+
+    ``timm.data.resolve_model_data_config`` only carries preprocessing fields
+    (input_size / mean / std / interpolation / crop_pct / crop_mode), so the
+    feature dim has to come from the model object itself.
+
+    Important: prefer ``head_hidden_size`` over ``num_features``. They match
+    for most backbones (ResNet, ConvNeXt, ViT…), but for backbones whose head
+    expands the channel count before pooling — most notably EfficientViT-B3
+    (``num_features=512`` vs ``head_hidden_size=2560``) — only
+    ``head_hidden_size`` matches what ``model(x)`` actually returns when
+    ``num_classes=0``. ``TactileVAE.encode`` re-validates the dim at the
+    first real forward, so a wrong reading here surfaces immediately rather
+    than silently corrupting training.
+    """
+    for attr in ("head_hidden_size", "num_features"):
+        value = getattr(encoder, attr, None)
+        if value is not None:
+            return int(value)
+    raise AttributeError(
+        "timm encoder must expose head_hidden_size or num_features to determine embedding dim."
     )
-    if not features_only and not hasattr(backbone, "forward_features"):
-        raise TypeError(f"timm model {args.model!r} does not expose forward_features().")
-    return backbone
-
-
-def _feature_dim(backbone: nn.Module, args: SimpleNamespace) -> int:
-    feature_dim = getattr(backbone, "num_features", None)
-    if feature_dim is not None:
-        return int(feature_dim)
-
-    feature_info = getattr(backbone, "feature_info", None)
-    if feature_info is not None:
-        try:
-            channels = feature_info.channels()
-        except AttributeError:
-            channels = [item["num_chs"] for item in feature_info]
-        if channels:
-            return int(channels[-1])
-
-    raise AttributeError(f"timm model {args.model!r} does not expose num_features or feature_info channels.")
 
 
 def _build_vae(
@@ -161,7 +179,8 @@ def _build_vae(
     timm_backbone: nn.Module,
     data_config: Mapping[str, Any],
 ) -> TactileVAE:
-    feature_dim = _feature_dim(timm_backbone, args)
+    feature_dim = _resolve_embedding_dim(timm_backbone)
+    args.encoder_feature_dim = feature_dim
     img_size = int(data_config["input_size"][-1])
     if img_size <= 0:
         raise ValueError(f"Resolved timm input size must be positive, got {img_size}.")
@@ -169,12 +188,13 @@ def _build_vae(
         raise ValueError("Resolved timm input size must be divisible by 32 unless decoder_hidden_spatial is set.")
     hidden_spatial = getattr(args, "decoder_hidden_spatial", None) or (img_size // 32)
     return TactileVAE(
-        encoder_backbone=TimmFeatureEncoder(timm_backbone, features_only=bool(getattr(args, "features_only", False))),
+        encoder_backbone=timm_backbone,
         feature_dim=feature_dim,
         latent_dim=args.latent_dim,
         decoder_hidden_channels=args.decoder_hidden_channels,
         decoder_hidden_spatial=hidden_spatial,
         loss_weights=LossWeights(mse=args.w_mse, grad=args.w_grad, kld=args.w_kld, ssim=args.w_ssim),
+        image_size=img_size,
     )
 
 
@@ -184,7 +204,13 @@ def _build_datasets(
 ) -> tuple[TactileDataset, TactileDataset]:
     paths = list_images(args.data_dir)
     splits = split_image_paths(paths, eval_ratio=args.eval_ratio, seed=args.seed)
-    transform = create_transform(**data_config)
+    # Match the official timm example exactly:
+    #   transforms = timm.data.create_transform(**data_config, is_training=False)
+    # For tactile reconstruction we deliberately skip training-time augmentation;
+    # color jitter / RandErase would corrupt the very signal the VAE has to
+    # reconstruct, and the eval transform already does resize + center crop +
+    # ImageNet-style normalization sized to the backbone's pretrained_cfg.
+    transform = create_transform(**data_config, is_training=False)
     return (
         TactileDataset(splits["train"], transform=transform),
         TactileDataset(splits["eval"], transform=transform),
@@ -455,9 +481,41 @@ def validate(
     return OrderedDict(loss=losses_m.avg, mse=mse_m.avg, grad=grad_m.avg, kld=kld_m.avg)
 
 
+def _parse_cli() -> Path:
+    parser = argparse.ArgumentParser(description="Train a tactile-image VAE with a timm encoder.")
+    parser.add_argument(
+        "-c", "--config",
+        type=str,
+        default=DEFAULT_CONFIG,
+        help=(
+            "Path to a YAML config under configs/. Either an absolute path, a path "
+            "relative to the repo root, or just the filename (e.g. "
+            "'resnet50_a1_in1k.yaml')."
+        ),
+    )
+    args = parser.parse_args()
+
+    raw = args.config
+    candidate = Path(raw)
+    if candidate.is_absolute() and candidate.exists():
+        return candidate
+
+    repo_root = Path(__file__).resolve().parents[1]
+    rel = repo_root / raw
+    if rel.exists():
+        return rel
+    in_configs = repo_root / "configs" / raw
+    if in_configs.exists():
+        return in_configs
+    raise FileNotFoundError(
+        f"Could not locate config '{raw}'. Tried: {candidate}, {rel}, {in_configs}."
+    )
+
+
 def main() -> None:
     utils.setup_default_logging()
-    config_path = Path(__file__).resolve().parents[1] / "configs" / "resnet50_a1_in1k.yaml"
+    config_path = _parse_cli()
+    _logger.info("Loading config from %s", config_path)
     args, args_text = _load_config(config_path)
 
     device = _resolve_device(args.device)
@@ -481,7 +539,7 @@ def main() -> None:
         "Model %s VAE created: params %.2fM, encoder features %s",
         safe_model_name(args.model),
         param_count / 1e6,
-        getattr(timm_backbone, "num_features", "unknown"),
+        getattr(args, "encoder_feature_dim", "unknown"),
     )
 
     dataset_train, dataset_eval = _build_datasets(args, data_config)

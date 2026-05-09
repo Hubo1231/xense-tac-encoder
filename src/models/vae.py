@@ -43,8 +43,9 @@ class TactileAutoencoder(BaseModel):
         decoder_hidden_channels: int = 512,
         decoder_hidden_spatial: int = 7,
         loss_weights: LossWeights | None = None,
+        image_size: int = 224,
     ) -> None:
-        super().__init__(image_size=224, input_channels=3, latent_dim=latent_dim)
+        super().__init__(image_size=image_size, input_channels=3, latent_dim=latent_dim)
         self.encoder = encoder_backbone
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.fc_latent = nn.Linear(feature_dim, latent_dim)
@@ -78,8 +79,10 @@ class TactileAutoencoder(BaseModel):
 class TactileVAE(BaseModel):
     """编码器 + 重参数化 + 解码器。
 
-    encoder_backbone 输出 (B, C, h, w)；通过 AdaptiveAvgPool 到 1x1 后投影到 latent。
-    将空间信息聚合后再投影，避免 backbone 输出维度差异导致 fc 层巨大。
+    encoder_backbone 通过 timm 风格的接口
+    ``output = encoder(transforms(img).unsqueeze(0))`` 返回 (B, feature_dim)
+    的图像 embedding；TactileVAE 再用 fc_mu / fc_logvar 投影到 latent，
+    走标准 VAE 重参数化与反卷积解码。
     """
 
     def __init__(
@@ -90,10 +93,11 @@ class TactileVAE(BaseModel):
         decoder_hidden_channels: int = 512,
         decoder_hidden_spatial: int = 7,
         loss_weights: LossWeights | None = None,
+        image_size: int = 224,
     ) -> None:
-        super().__init__(image_size=224, input_channels=3, latent_dim=latent_dim)
+        super().__init__(image_size=image_size, input_channels=3, latent_dim=latent_dim)
         self.encoder = encoder_backbone
-        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.feature_dim = feature_dim
         self.fc_mu = nn.Linear(feature_dim, latent_dim)
         self.fc_logvar = nn.Linear(feature_dim, latent_dim)
         self.decoder = TactileDecoder(latent_dim, decoder_hidden_channels, decoder_hidden_spatial)
@@ -101,7 +105,14 @@ class TactileVAE(BaseModel):
 
     def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         feat = self.encoder(x)
-        feat = self.pool(feat).flatten(1)
+        if feat.ndim != 2:
+            raise ValueError(
+                f"TactileVAE encoder must return (B, C) embeddings, got shape {tuple(feat.shape)}."
+            )
+        if feat.shape[1] != self.feature_dim:
+            raise ValueError(
+                f"Encoder embedding dim {feat.shape[1]} does not match configured feature_dim {self.feature_dim}."
+            )
         return self.fc_mu(feat), self.fc_logvar(feat)
 
     @staticmethod
