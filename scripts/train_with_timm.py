@@ -457,7 +457,7 @@ def validate(
 
 def main() -> None:
     utils.setup_default_logging()
-    config_path = Path(__file__).resolve().parents[1] / "configs" / "vit_base_patch16_dinov3_lvd1689m.yaml"
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "resnet50_a1_in1k.yaml"
     args, args_text = _load_config(config_path)
 
     device = _resolve_device(args.device)
