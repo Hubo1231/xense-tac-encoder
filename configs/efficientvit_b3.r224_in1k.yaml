@@ -13,6 +13,7 @@ eval_ratio: 0.2
 #   forward_features output: (B, 512, 7, 7)
 model: efficientvit_b3.r224_in1k
 pretrained: true
+features_only: false
 pretrained_path: "checkpoint/efficientvit_b3.r224_in1k/model.safetensors"
 initial_checkpoint: ""
 resume: ""

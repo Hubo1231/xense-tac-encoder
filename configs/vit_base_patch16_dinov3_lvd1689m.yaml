@@ -1,4 +1,4 @@
-# Train a tactile-image VAE with a timm FastViT encoder.
+# Train a tactile-image VAE with a timm DINOv3 ViT encoder.
 # Run:
 #   python scripts/train_with_timm.py
 
@@ -7,14 +7,21 @@ data_dir: data
 eval_ratio: 0.2
 
 # Model
+# Requested HF model id: timm/vit_base_patch16_dinov3.lvd1689m
+# timm registered model name: vit_base_patch16_dinov3.lvd1689m
 # timm pretrained_cfg:
 #   input_size: (3, 256, 256)
-#   num_features: 1216
-#   forward_features output: (B, 1216, 8, 8)
-model: fastvit_ma36.apple_in1k
+#   num_features: 768
+#   forward_features output without features_only: (B, 261, 768)
+#   features_only output[-1]: (B, 768, 16, 16)
+#
+# Note: features_only uses timm's official feature getter to return spatial
+# feature maps instead of token sequences; the training wrapper takes the last
+# feature map.
+model: vit_base_patch16_dinov3.lvd1689m
 pretrained: true
-features_only: false
-pretrained_path: "checkpoint/fastvit_ma36.apple_in1k/model.safetensors"
+features_only: true
+pretrained_path: "checkpoint/vit_base_patch16_dinov3_lvd1689m/model.safetensors"
 initial_checkpoint: ""
 resume: ""
 no_resume_opt: false
@@ -61,7 +68,7 @@ experiment: ""
 # wandb
 log_wandb: true
 wandb_project: xense-tac-encoder
-wandb_name: "fastvit_ma36_apple_in1k"
+wandb_name: "vit_base_patch16_dinov3_lvd1689m"
 wandb_log_images: true
 wandb_image_interval: 1
 wandb_num_images: 8

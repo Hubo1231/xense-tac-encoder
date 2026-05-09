@@ -9,6 +9,7 @@ eval_ratio: 0.2
 # Model
 model: mobilenetv4_conv_aa_large
 pretrained: false
+features_only: false
 pretrained_path: "checkpoint/mobilenetv4_conv_aa_large.e230_r448_in12k_ft_in1k/model.safetensors"
 initial_checkpoint: ""
 resume: ""

@@ -100,12 +100,18 @@ def _load_config(config_path: Path) -> tuple[SimpleNamespace, str]:
 class TimmFeatureEncoder(nn.Module):
     """Wrap a timm model so VAE sees only unpooled feature maps."""
 
-    def __init__(self, model: nn.Module) -> None:
+    def __init__(self, model: nn.Module, *, features_only: bool = False) -> None:
         super().__init__()
         self.model = model
+        self.features_only = features_only
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.model.forward_features(x)
+        if not self.features_only:
+            return self.model.forward_features(x)
+        features = self.model(x)
+        if not isinstance(features, (list, tuple)) or not features:
+            raise TypeError("features_only timm model must return a non-empty list/tuple of feature maps.")
+        return features[-1]
 
 
 def _resolve_device(name: str) -> torch.device:
@@ -116,19 +122,38 @@ def _resolve_device(name: str) -> torch.device:
 
 def _build_timm_backbone(args: SimpleNamespace) -> nn.Module:
     factory_kwargs: dict[str, Any] = {}
+    features_only = bool(getattr(args, "features_only", False))
     if args.pretrained_path:
         factory_kwargs["pretrained_cfg_overlay"] = {"file": args.pretrained_path, "num_classes": -1}
     backbone = create_model(
         args.model,
         pretrained=args.pretrained or bool(args.pretrained_path),
+        features_only=features_only,
         in_chans=args.in_chans,
         num_classes=0,
         **factory_kwargs,
         **(getattr(args, "model_kwargs", {}) or {}),
     )
-    if not hasattr(backbone, "forward_features"):
+    if not features_only and not hasattr(backbone, "forward_features"):
         raise TypeError(f"timm model {args.model!r} does not expose forward_features().")
     return backbone
+
+
+def _feature_dim(backbone: nn.Module, args: SimpleNamespace) -> int:
+    feature_dim = getattr(backbone, "num_features", None)
+    if feature_dim is not None:
+        return int(feature_dim)
+
+    feature_info = getattr(backbone, "feature_info", None)
+    if feature_info is not None:
+        try:
+            channels = feature_info.channels()
+        except AttributeError:
+            channels = [item["num_chs"] for item in feature_info]
+        if channels:
+            return int(channels[-1])
+
+    raise AttributeError(f"timm model {args.model!r} does not expose num_features or feature_info channels.")
 
 
 def _build_vae(
@@ -136,9 +161,7 @@ def _build_vae(
     timm_backbone: nn.Module,
     data_config: Mapping[str, Any],
 ) -> TactileVAE:
-    feature_dim = getattr(timm_backbone, "num_features", None)
-    if feature_dim is None:
-        raise AttributeError(f"timm model {args.model!r} does not expose num_features.")
+    feature_dim = _feature_dim(timm_backbone, args)
     img_size = int(data_config["input_size"][-1])
     if img_size <= 0:
         raise ValueError(f"Resolved timm input size must be positive, got {img_size}.")
@@ -146,8 +169,8 @@ def _build_vae(
         raise ValueError("Resolved timm input size must be divisible by 32 unless decoder_hidden_spatial is set.")
     hidden_spatial = getattr(args, "decoder_hidden_spatial", None) or (img_size // 32)
     return TactileVAE(
-        encoder_backbone=TimmFeatureEncoder(timm_backbone),
-        feature_dim=int(feature_dim),
+        encoder_backbone=TimmFeatureEncoder(timm_backbone, features_only=bool(getattr(args, "features_only", False))),
+        feature_dim=feature_dim,
         latent_dim=args.latent_dim,
         decoder_hidden_channels=args.decoder_hidden_channels,
         decoder_hidden_spatial=hidden_spatial,
@@ -434,7 +457,7 @@ def validate(
 
 def main() -> None:
     utils.setup_default_logging()
-    config_path = Path(__file__).resolve().parents[1] / "configs" / "convnextv2_base_fcmae_ft_in22k_in1k.yaml"
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "vit_base_patch16_dinov3_lvd1689m.yaml"
     args, args_text = _load_config(config_path)
 
     device = _resolve_device(args.device)

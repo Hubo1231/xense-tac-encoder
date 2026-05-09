@@ -13,6 +13,7 @@ eval_ratio: 0.2
 #   forward_features output: (B, 1024, 7, 7)
 model: convnextv2_base.fcmae_ft_in22k_in1k
 pretrained: true
+features_only: false
 pretrained_path: "checkpoint/convnextv2_base_fcmae_ft_in22k_in1k/model.safetensors"
 initial_checkpoint: ""
 resume: ""
