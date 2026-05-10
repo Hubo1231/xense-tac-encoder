@@ -79,6 +79,7 @@ REQUIRED_KEYS: tuple[str, ...] = (
     "in_chans", "latent_dim", "decoder_hidden_channels",
     # Loss
     "w_mse", "w_grad", "w_kld", "w_ssim",
+    "w_mix", "mix_alpha", "use_ms_ssim",
     # Device
     "device",
     # Optimizer / scheduler
@@ -193,7 +194,15 @@ def _build_vae(
         latent_dim=args.latent_dim,
         decoder_hidden_channels=args.decoder_hidden_channels,
         decoder_hidden_spatial=hidden_spatial,
-        loss_weights=LossWeights(mse=args.w_mse, grad=args.w_grad, kld=args.w_kld, ssim=args.w_ssim),
+        loss_weights=LossWeights(
+            mse=args.w_mse,
+            grad=args.w_grad,
+            kld=args.w_kld,
+            ssim=args.w_ssim,
+            mix=args.w_mix,
+            mix_alpha=args.mix_alpha,
+            use_ms_ssim=bool(args.use_ms_ssim),
+        ),
         image_size=img_size,
     )
 
@@ -389,6 +398,7 @@ def train_one_epoch(
     mse_m = utils.AverageMeter()
     grad_m = utils.AverageMeter()
     kld_m = utils.AverageMeter()
+    mix_m = utils.AverageMeter()
     batch_time_m = utils.AverageMeter()
 
     last_idx = len(loader) - 1
@@ -411,6 +421,7 @@ def train_one_epoch(
         mse_m.update(items.get("mse", 0.0), bs)
         grad_m.update(items.get("grad", 0.0), bs)
         kld_m.update(items.get("kld", 0.0), bs)
+        mix_m.update(items.get("mix", 0.0), bs)
         batch_time_m.update(time.time() - end)
         end = time.time()
         lr = _avg_lr(optimizer)
@@ -418,19 +429,20 @@ def train_one_epoch(
             loss=f"{losses_m.avg:.4f}",
             mse=f"{mse_m.avg:.4f}",
             kld=f"{kld_m.avg:.4f}",
+            mix=f"{mix_m.avg:.4f}",
             lr=f"{lr:.2e}",
         )
 
         if batch_idx % args.log_interval == 0 or batch_idx == last_idx:
             _logger.info(
-                "Train: %d [%4d/%d] Loss %.4f (%.4f) MSE %.4f Grad %.4f KLD %.4f Time %.3fs LR %.3e",
+                "Train: %d [%4d/%d] Loss %.4f (%.4f) MSE %.4f Grad %.4f KLD %.4f Mix %.4f Time %.3fs LR %.3e",
                 epoch, batch_idx, len(loader),
                 losses_m.val, losses_m.avg,
-                mse_m.avg, grad_m.avg, kld_m.avg,
+                mse_m.avg, grad_m.avg, kld_m.avg, mix_m.avg,
                 batch_time_m.val, lr,
             )
 
-    return OrderedDict(loss=losses_m.avg, mse=mse_m.avg, grad=grad_m.avg, kld=kld_m.avg)
+    return OrderedDict(loss=losses_m.avg, mse=mse_m.avg, grad=grad_m.avg, kld=kld_m.avg, mix=mix_m.avg)
 
 
 @torch.inference_mode()
@@ -446,6 +458,7 @@ def validate(
     mse_m = utils.AverageMeter()
     grad_m = utils.AverageMeter()
     kld_m = utils.AverageMeter()
+    mix_m = utils.AverageMeter()
     batch_time_m = utils.AverageMeter()
 
     end = time.time()
@@ -461,24 +474,26 @@ def validate(
         mse_m.update(items.get("mse", 0.0), bs)
         grad_m.update(items.get("grad", 0.0), bs)
         kld_m.update(items.get("kld", 0.0), bs)
+        mix_m.update(items.get("mix", 0.0), bs)
         batch_time_m.update(time.time() - end)
         end = time.time()
         progress.set_postfix(
             loss=f"{losses_m.avg:.4f}",
             mse=f"{mse_m.avg:.4f}",
             kld=f"{kld_m.avg:.4f}",
+            mix=f"{mix_m.avg:.4f}",
         )
 
         if batch_idx % args.log_interval == 0 or batch_idx == last_idx:
             _logger.info(
-                "Eval: [%4d/%d] Loss %.4f (%.4f) MSE %.4f Grad %.4f KLD %.4f Time %.3fs",
+                "Eval: [%4d/%d] Loss %.4f (%.4f) MSE %.4f Grad %.4f KLD %.4f Mix %.4f Time %.3fs",
                 batch_idx, len(loader),
                 losses_m.val, losses_m.avg,
-                mse_m.avg, grad_m.avg, kld_m.avg,
+                mse_m.avg, grad_m.avg, kld_m.avg, mix_m.avg,
                 batch_time_m.val,
             )
 
-    return OrderedDict(loss=losses_m.avg, mse=mse_m.avg, grad=grad_m.avg, kld=kld_m.avg)
+    return OrderedDict(loss=losses_m.avg, mse=mse_m.avg, grad=grad_m.avg, kld=kld_m.avg, mix=mix_m.avg)
 
 
 def _parse_cli() -> Path:

@@ -1,36 +1,36 @@
-"""Benchmark feature extraction latency for encoder backbones on GPU.
+"""Benchmark image-embedding latency for timm encoder backbones on GPU.
 
-The measured interval is the model forward pass only: an input tensor enters
-the feature extractor and the output feature map is produced. Image loading and
-preprocessing are intentionally outside the timed section.
+Each model is built via ``timm.create_model(name, num_classes=0, ...)`` so the
+classification head is replaced by an identity / global pool. The timed call is
+``model(x)``, which therefore returns the pooled image embedding of shape
+``(B, C)``. Image loading and preprocessing are kept outside the timed section.
 
 Typical commands:
 
-    # Benchmark the MobileNetV4 timm encoder using the project config.
+    # Benchmark a single timm encoder using a project config.
     python src/utils/benchmark_feature_extractors.py \
-        --config configs/mobilenetv4_conv_aa_large.yaml \
+        --config configs/fastvit_ma36_apple_in1k.yaml \
         --warmup 50 \
         --iters 500
 
     # Benchmark without loading local checkpoint weights.
     python src/utils/benchmark_feature_extractors.py \
-        --config configs/mobilenetv4_conv_aa_large.yaml \
+        --config configs/fastvit_ma36_apple_in1k.yaml \
         --ignore-config-pretrained-path \
         --warmup 50 \
         --iters 500
 
-    # Benchmark multiple timm feature extractors at 448x448.
+    # Benchmark multiple timm encoders at 448x448.
     python src/utils/benchmark_feature_extractors.py \
         --models mobilenetv4_conv_aa_large resnet18 efficientnet_b0 \
         --input-size 3 448 448 \
         --warmup 50 \
         --iters 500
 
-    # Benchmark all project-registered feature extractors and save a CSV.
+    # Save results as CSV.
     python src/utils/benchmark_feature_extractors.py \
-        --source registry \
-        --models all \
-        --output-csv outputs/feature_latency.csv \
+        --models fastvit_ma36 convnextv2_tiny efficientvit_b3 \
+        --output-csv outputs/embedding_latency.csv \
         --warmup 50 \
         --iters 500
 """
@@ -68,7 +68,6 @@ DEFAULT_MODEL = "mobilenetv4_conv_aa_large"
 @dataclass
 class BenchmarkResult:
     model: str
-    source: str
     device: str
     dtype: str
     input_shape: tuple[int, ...]
@@ -86,38 +85,21 @@ class BenchmarkResult:
     params_million: float
 
 
-class TimmForwardFeatures(nn.Module):
-    """Wrap a timm model so benchmark timing ends at feature-map output."""
-
-    def __init__(self, model: nn.Module) -> None:
-        super().__init__()
-        self.model = model
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.model.forward_features(x)
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Measure image-to-feature-map latency for one or more feature extractors."
-    )
-    parser.add_argument(
-        "--source",
-        choices=("timm", "registry"),
-        default="timm",
-        help="Model source. 'registry' uses src.models.backbones. Default: timm.",
+        description="Measure image-to-embedding latency for one or more timm encoder backbones."
     )
     parser.add_argument(
         "--models",
         nargs="+",
         default=[DEFAULT_MODEL],
-        help="Model names to benchmark. Use 'all' with --source registry to benchmark every registered backbone.",
+        help="timm model names to benchmark.",
     )
     parser.add_argument(
         "--config",
         type=Path,
         default=None,
-        help="Optional YAML config. For timm, model/pretrained_path/in_chans/model_kwargs can be read from it.",
+        help="Optional YAML config. model / pretrained_path / in_chans / model_kwargs are read from it.",
     )
     parser.add_argument("--device", default="cuda", help="GPU device, e.g. cuda or cuda:0. Default: cuda.")
     parser.add_argument(
@@ -206,7 +188,7 @@ def count_parameters(module: nn.Module) -> int:
     return sum(p.numel() for p in module.parameters())
 
 
-def build_timm_extractor(
+def build_timm_encoder(
     name: str,
     *,
     config: dict[str, Any],
@@ -214,6 +196,7 @@ def build_timm_extractor(
     pretrained_path: Path | None,
     ignore_config_pretrained_path: bool,
 ) -> tuple[nn.Module, dict[str, Any]]:
+    """Create a timm model with ``num_classes=0`` so ``model(x) -> (B, C)``."""
     cfg_pretrained_path = None if ignore_config_pretrained_path else config.get("pretrained_path")
     resolved_pretrained_path = pretrained_path or (Path(cfg_pretrained_path) if cfg_pretrained_path else None)
     resolved_pretrained_path = resolve_project_path(resolved_pretrained_path)
@@ -234,28 +217,9 @@ def build_timm_extractor(
         **factory_kwargs,
         **model_kwargs,
     )
-    if not hasattr(model, "forward_features"):
-        raise SystemExit(f"timm model {name!r} does not expose forward_features().")
 
     data_config = resolve_data_config({}, model=model)
-    return TimmForwardFeatures(model), data_config
-
-
-def build_registry_extractor(name: str, *, pretrained: bool) -> tuple[nn.Module, dict[str, Any]]:
-    from src.models.backbones import build_backbone
-
-    model, _, _ = build_backbone(name, pretrained=pretrained)
-    return model, {"input_size": (3, 224, 224)}
-
-
-def expand_model_names(source: str, names: list[str]) -> list[str]:
-    if names != ["all"]:
-        return names
-    if source != "registry":
-        raise SystemExit("'all' is only supported with --source registry.")
-    from src.models.backbones import available_backbones
-
-    return available_backbones()
+    return model, data_config
 
 
 def build_input_tensor(
@@ -330,12 +294,10 @@ def benchmark_once(
             output = model(input_tensor)
             timings_ms.append((time.perf_counter() - start) * 1000.0)
 
-    if isinstance(output, (tuple, list)):
-        output = output[-1]
-    if isinstance(output, dict):
-        output = next(reversed(output.values()))
     if not torch.is_tensor(output):
-        raise SystemExit(f"Model output is not a tensor: {type(output)!r}")
+        raise SystemExit(
+            f"Expected timm model(x) to return a tensor embedding, got: {type(output)!r}"
+        )
     return timings_ms, tuple(output.shape)
 
 
@@ -350,7 +312,6 @@ def percentile(values: list[float], q: float) -> float:
 def summarize_result(
     *,
     model_name: str,
-    source: str,
     model: nn.Module,
     input_tensor: torch.Tensor,
     output_shape: tuple[int, ...],
@@ -362,7 +323,6 @@ def summarize_result(
     mean_ms = statistics.fmean(timings_ms)
     return BenchmarkResult(
         model=model_name,
-        source=source,
         device=str(device),
         dtype=dtype_name,
         input_shape=tuple(input_tensor.shape),
@@ -383,15 +343,15 @@ def summarize_result(
 
 def print_results(results: list[BenchmarkResult]) -> None:
     header = (
-        f"{'model':<32} {'source':<8} {'device':<8} {'input':<18} {'output':<18}"
+        f"{'model':<32} {'device':<8} {'input':<18} {'output':<14}"
         f" {'mean(ms)':>10} {'median':>10} {'p90':>10} {'per_img':>10} {'params(M)':>10}"
     )
     print(header)
     print("-" * len(header))
     for item in results:
         print(
-            f"{item.model:<32} {item.source:<8} {item.device:<8} "
-            f"{str(item.input_shape):<18} {str(item.output_shape):<18} "
+            f"{item.model:<32} {item.device:<8} "
+            f"{str(item.input_shape):<18} {str(item.output_shape):<14} "
             f"{item.mean_ms:>10.3f} {item.median_ms:>10.3f} {item.p90_ms:>10.3f} "
             f"{item.mean_ms_per_image:>10.3f} {item.params_million:>10.2f}"
         )
@@ -413,7 +373,10 @@ def save_csv(path: Path, results: list[BenchmarkResult]) -> None:
 def main() -> None:
     args = parse_args()
     config = load_yaml(args.config)
-    model_names = expand_model_names(args.source, args.models)
+    model_names = list(args.models)
+    if args.config and args.models == [DEFAULT_MODEL] and config.get("model"):
+        model_names = [config["model"]]
+
     device = resolve_device(args.device)
     dtype = resolve_dtype(args.dtype, device)
 
@@ -423,17 +386,13 @@ def main() -> None:
 
     results: list[BenchmarkResult] = []
     for model_name in model_names:
-        effective_name = config.get("model", model_name) if args.config and args.models == [DEFAULT_MODEL] else model_name
-        if args.source == "timm":
-            model, data_config = build_timm_extractor(
-                effective_name,
-                config=config,
-                pretrained=args.pretrained or bool(config.get("pretrained", False)),
-                pretrained_path=args.pretrained_path,
-                ignore_config_pretrained_path=args.ignore_config_pretrained_path,
-            )
-        else:
-            model, data_config = build_registry_extractor(effective_name, pretrained=args.pretrained)
+        model, data_config = build_timm_encoder(
+            model_name,
+            config=config,
+            pretrained=args.pretrained or bool(config.get("pretrained", False)),
+            pretrained_path=args.pretrained_path,
+            ignore_config_pretrained_path=args.ignore_config_pretrained_path,
+        )
 
         model = model.to(device=device, dtype=dtype)
         input_tensor = build_input_tensor(
@@ -453,8 +412,7 @@ def main() -> None:
         )
         results.append(
             summarize_result(
-                model_name=effective_name,
-                source=args.source,
+                model_name=model_name,
                 model=model,
                 input_tensor=input_tensor,
                 output_shape=output_shape,

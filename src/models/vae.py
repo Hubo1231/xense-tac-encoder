@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 from src.models.base_model import BaseModel
-from src.training.losses import LossWeights, kl_divergence, reconstruction_terms, ssim_loss
+from src.training.losses import LossWeights, kl_divergence, mix_loss, reconstruction_terms, ssim_loss
 
 
 class TactileDecoder(nn.Module):
@@ -72,7 +72,16 @@ class TactileAutoencoder(BaseModel):
         if self.loss_weights.ssim > 0:
             ssim = ssim_loss(recon, batch)
             losses["ssim"] = ssim
-            losses["total"] = total + self.loss_weights.ssim * ssim
+            total = total + self.loss_weights.ssim * ssim
+        if self.loss_weights.mix > 0:
+            mix = mix_loss(
+                recon, batch,
+                alpha=self.loss_weights.mix_alpha,
+                use_ms_ssim=self.loss_weights.use_ms_ssim,
+            )
+            losses["mix"] = mix
+            total = total + self.loss_weights.mix * mix
+        losses["total"] = total
         return losses
 
 
@@ -138,5 +147,14 @@ class TactileVAE(BaseModel):
         if self.loss_weights.ssim > 0:
             ssim = ssim_loss(recon, batch)
             losses["ssim"] = ssim
-            losses["total"] = total + self.loss_weights.ssim * ssim
+            total = total + self.loss_weights.ssim * ssim
+        if self.loss_weights.mix > 0:
+            mix = mix_loss(
+                recon, batch,
+                alpha=self.loss_weights.mix_alpha,
+                use_ms_ssim=self.loss_weights.use_ms_ssim,
+            )
+            losses["mix"] = mix
+            total = total + self.loss_weights.mix * mix
+        losses["total"] = total
         return losses

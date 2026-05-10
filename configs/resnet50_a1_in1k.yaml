@@ -28,6 +28,9 @@ w_mse: 1.0
 w_grad: 2.0
 w_kld: 0.01
 w_ssim: 0.0
+w_mix: 0.0
+mix_alpha: 0.84
+use_ms_ssim: false
 
 # Device
 device: auto
