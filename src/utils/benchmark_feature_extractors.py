@@ -136,6 +136,14 @@ def parse_args() -> argparse.Namespace:
         help="Ignore pretrained_path from --config and create the model without local weights.",
     )
     parser.add_argument(
+        "--reparameterize",
+        action="store_true",
+        help=(
+            "Fuse reparameterizable train-time branches after checkpoint loading. "
+            "This can also be enabled by setting reparameterize: true in the config."
+        ),
+    )
+    parser.add_argument(
         "--image",
         type=Path,
         default=None,
@@ -188,6 +196,17 @@ def count_parameters(module: nn.Module) -> int:
     return sum(p.numel() for p in module.parameters())
 
 
+def reparameterize_model(module: nn.Module) -> int:
+    """Fuse modules that expose a timm-style ``reparameterize()`` method."""
+    fused = 0
+    for child in reversed(list(module.modules())):
+        reparameterize = getattr(child, "reparameterize", None)
+        if callable(reparameterize):
+            reparameterize()
+            fused += 1
+    return fused
+
+
 def build_timm_encoder(
     name: str,
     *,
@@ -195,6 +214,7 @@ def build_timm_encoder(
     pretrained: bool,
     pretrained_path: Path | None,
     ignore_config_pretrained_path: bool,
+    reparameterize: bool,
 ) -> tuple[nn.Module, dict[str, Any]]:
     """Create a timm model with ``num_classes=0`` so ``model(x) -> (B, C)``."""
     cfg_pretrained_path = None if ignore_config_pretrained_path else config.get("pretrained_path")
@@ -217,6 +237,10 @@ def build_timm_encoder(
         **factory_kwargs,
         **model_kwargs,
     )
+    if reparameterize:
+        fused = reparameterize_model(model)
+        if fused == 0:
+            print(f"warning: --reparameterize requested, but {name} exposes no reparameterizable modules.")
 
     data_config = resolve_data_config({}, model=model)
     return model, data_config
@@ -392,6 +416,7 @@ def main() -> None:
             pretrained=args.pretrained or bool(config.get("pretrained", False)),
             pretrained_path=args.pretrained_path,
             ignore_config_pretrained_path=args.ignore_config_pretrained_path,
+            reparameterize=args.reparameterize or bool(config.get("reparameterize", False)),
         )
 
         model = model.to(device=device, dtype=dtype)
