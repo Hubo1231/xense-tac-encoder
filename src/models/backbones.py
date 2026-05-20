@@ -82,12 +82,29 @@ class _MobileNetV4Features(nn.Module):
         return self.model.forward_features(x)
 
 
+class _FastVitFeatures(nn.Module):
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, x):
+        return self.model.forward_features(x)
+
+
 @register("mobilenetv4_conv_aa_large")
 def _mbv4_conv_aa_large(pretrained: bool):
     from src.models.mobilenet_v4.mobilenetv4_conv_aa_large import mobilenetv4_conv_aa_large
 
     net = mobilenetv4_conv_aa_large(pretrained=pretrained, num_classes=0)
     return _MobileNetV4Features(net), net.num_features, 7
+
+
+@register("fastvit_t12_apple_dist_in1k")
+def _fastvit_t12_apple_dist_in1k(pretrained: bool):
+    from src.models.fastvit_t12_apple_dist_in1k import fastvit_t12_apple_dist_in1k
+
+    net = fastvit_t12_apple_dist_in1k(pretrained=pretrained, num_classes=0, reparameterize=True)
+    return _FastVitFeatures(net), net.num_features, 8
 
 
 @register("efficientnet_b0")

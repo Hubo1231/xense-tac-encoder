@@ -1,4 +1,4 @@
-# Train a tactile-image VAE with a timm DINOv3 ViT encoder.
+# Train a tactile-image VAE with a timm ConvNeXtV2 encoder.
 # Run:
 #   python scripts/train_with_timm.py
 
@@ -7,15 +7,13 @@ data_dir: data
 eval_ratio: 0.2
 
 # Model
-# Requested HF model id: timm/vit_base_patch16_dinov3.lvd1689m
-# timm registered model name: vit_base_patch16_dinov3.lvd1689m
 # timm pretrained_cfg:
-#   input_size: (3, 256, 256)
-#   num_features: 768
-#   model(x) embedding output with num_classes=0: (B, 768)
-model: vit_base_patch16_dinov3.lvd1689m
+#   input_size: (3, 224, 224)
+#   num_features: 1024
+#   model(x) embedding output with num_classes=0: (B, 1024)
+model: convnextv2_base.fcmae_ft_in22k_in1k
 pretrained: true
-pretrained_path: "checkpoint/vit_base_patch16_dinov3_lvd1689m/model.safetensors"
+pretrained_path: "checkpoint/convnextv2_base_fcmae_ft_in22k_in1k/model.safetensors"
 initial_checkpoint: ""
 resume: ""
 no_resume_opt: false
@@ -26,14 +24,15 @@ decoder_hidden_spatial:
 model_kwargs: {}
 
 # Loss
-# 重建项完全使用 mix loss = α(1-MS_SSIM) + (1-α)L1，关掉 MSE/grad。
-w_mse: 0.0
-w_grad: 0.0
+w_mse: 1.0
+w_grad: 2.0
 w_kld: 0.01
 w_ssim: 0.0
+# SSIM + L1 混合损失：α(1-SSIM) + (1-α)L1，α=0.84 为常用经验值。
+# 与 w_mse / w_grad 叠加，把它们置零即等价于完全替换重建项。
 w_mix: 1.0
 mix_alpha: 0.84
-use_ms_ssim: true
+use_ms_ssim: false
 
 # Device
 device: auto
@@ -46,7 +45,7 @@ clip_grad:
 
 # Scheduler
 sched: cosine
-epochs: 25
+epochs: 20
 warmup_epochs: 1
 warmup_lr: 0.000001
 min_lr: 0.000001
@@ -55,7 +54,7 @@ cooldown_epochs: 0
 # Preprocessing is resolved from timm pretrained_cfg in scripts/train_with_timm.py.
 
 # Loader and logging
-batch_size: 16
+batch_size: 8
 workers: 4
 seed: 42
 log_interval: 20
@@ -66,7 +65,7 @@ experiment: ""
 # wandb
 log_wandb: true
 wandb_project: xense-tac-encoder
-wandb_name: "vit_base_patch16_dinov3_lvd1689m"
+wandb_name: "convnextv2_base_fcmae_ft_in22k_in1k"
 wandb_log_images: true
 wandb_image_interval: 1
 wandb_num_images: 8

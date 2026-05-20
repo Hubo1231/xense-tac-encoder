@@ -83,6 +83,9 @@ class BenchmarkResult:
     std_ms: float
     mean_ms_per_image: float
     params_million: float
+    gpu_allocated_before_forward_mb: float | None
+    gpu_peak_forward_mb: float | None
+    gpu_forward_delta_mb: float | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -99,7 +102,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=None,
-        help="Optional YAML config. model / pretrained_path / in_chans / model_kwargs are read from it.",
+        help="Optional YAML config. model / input_size / pretrained_path / in_chans / model_kwargs are read from it.",
     )
     parser.add_argument("--device", default="cuda", help="GPU device, e.g. cuda or cuda:0. Default: cuda.")
     parser.add_argument(
@@ -192,8 +195,24 @@ def resolve_project_path(path: Path | None) -> Path | None:
     return path if path.is_absolute() else REPO_ROOT / path
 
 
+def resolve_config_input_size(config: dict[str, Any]) -> list[int] | None:
+    value = config.get("input_size")
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise SystemExit(f"Config input_size must be a C H W sequence, got: {value!r}")
+    try:
+        return [int(v) for v in value]
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"Config input_size must contain integers, got: {value!r}") from exc
+
+
 def count_parameters(module: nn.Module) -> int:
     return sum(p.numel() for p in module.parameters())
+
+
+def bytes_to_mib(value: int) -> float:
+    return value / (1024**2)
 
 
 def reparameterize_model(module: nn.Module) -> int:
@@ -289,7 +308,7 @@ def benchmark_once(
     warmup: int,
     iters: int,
     device: torch.device,
-) -> tuple[list[float], tuple[int, ...]]:
+) -> tuple[list[float], tuple[int, ...], tuple[float | None, float | None, float | None]]:
     if warmup < 0:
         raise SystemExit("--warmup must be >= 0")
     if iters < 1:
@@ -301,12 +320,18 @@ def benchmark_once(
         output = model(input_tensor)
     if device.type == "cuda":
         torch.cuda.synchronize(device)
+        output = None
+        gpu_allocated_before_forward_mb = bytes_to_mib(torch.cuda.memory_allocated(device))
+        torch.cuda.reset_peak_memory_stats(device)
+    else:
+        gpu_allocated_before_forward_mb = None
 
     timings_ms: list[float] = []
     if device.type == "cuda":
         for _ in range(iters):
             start = torch.cuda.Event(enable_timing=True)
             end = torch.cuda.Event(enable_timing=True)
+            output = None
             start.record()
             output = model(input_tensor)
             end.record()
@@ -314,6 +339,7 @@ def benchmark_once(
             timings_ms.append(start.elapsed_time(end))
     else:
         for _ in range(iters):
+            output = None
             start = time.perf_counter()
             output = model(input_tensor)
             timings_ms.append((time.perf_counter() - start) * 1000.0)
@@ -322,7 +348,23 @@ def benchmark_once(
         raise SystemExit(
             f"Expected timm model(x) to return a tensor embedding, got: {type(output)!r}"
         )
-    return timings_ms, tuple(output.shape)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+        gpu_peak_forward_mb = bytes_to_mib(torch.cuda.max_memory_allocated(device))
+        gpu_forward_delta_mb = gpu_peak_forward_mb - gpu_allocated_before_forward_mb
+    else:
+        gpu_peak_forward_mb = None
+        gpu_forward_delta_mb = None
+
+    return (
+        timings_ms,
+        tuple(output.shape),
+        (
+            gpu_allocated_before_forward_mb,
+            gpu_peak_forward_mb,
+            gpu_forward_delta_mb,
+        ),
+    )
 
 
 def percentile(values: list[float], q: float) -> float:
@@ -340,6 +382,7 @@ def summarize_result(
     input_tensor: torch.Tensor,
     output_shape: tuple[int, ...],
     timings_ms: list[float],
+    gpu_memory_stats: tuple[float | None, float | None, float | None],
     warmup: int,
     device: torch.device,
     dtype_name: str,
@@ -362,13 +405,23 @@ def summarize_result(
         std_ms=statistics.pstdev(timings_ms) if len(timings_ms) > 1 else 0.0,
         mean_ms_per_image=mean_ms / input_tensor.shape[0],
         params_million=count_parameters(model) / 1e6,
+        gpu_allocated_before_forward_mb=gpu_memory_stats[0],
+        gpu_peak_forward_mb=gpu_memory_stats[1],
+        gpu_forward_delta_mb=gpu_memory_stats[2],
     )
+
+
+def format_optional_float(value: float | None, width: int, precision: int = 1) -> str:
+    if value is None:
+        return f"{'-':>{width}}"
+    return f"{value:>{width}.{precision}f}"
 
 
 def print_results(results: list[BenchmarkResult]) -> None:
     header = (
         f"{'model':<32} {'device':<8} {'input':<18} {'output':<14}"
         f" {'mean(ms)':>10} {'median':>10} {'p90':>10} {'per_img':>10} {'params(M)':>10}"
+        f" {'gpu_base(MB)':>13} {'gpu_peak(MB)':>13} {'gpu_fwd+(MB)':>13}"
     )
     print(header)
     print("-" * len(header))
@@ -377,7 +430,10 @@ def print_results(results: list[BenchmarkResult]) -> None:
             f"{item.model:<32} {item.device:<8} "
             f"{str(item.input_shape):<18} {str(item.output_shape):<14} "
             f"{item.mean_ms:>10.3f} {item.median_ms:>10.3f} {item.p90_ms:>10.3f} "
-            f"{item.mean_ms_per_image:>10.3f} {item.params_million:>10.2f}"
+            f"{item.mean_ms_per_image:>10.3f} {item.params_million:>10.2f} "
+            f"{format_optional_float(item.gpu_allocated_before_forward_mb, 13)} "
+            f"{format_optional_float(item.gpu_peak_forward_mb, 13)} "
+            f"{format_optional_float(item.gpu_forward_delta_mb, 13)}"
         )
 
 
@@ -423,12 +479,12 @@ def main() -> None:
         input_tensor = build_input_tensor(
             image_path=args.image,
             data_config=data_config,
-            input_size=args.input_size,
+            input_size=args.input_size or resolve_config_input_size(config),
             batch_size=args.batch_size,
             device=device,
             dtype=dtype,
         )
-        timings_ms, output_shape = benchmark_once(
+        timings_ms, output_shape, gpu_memory_stats = benchmark_once(
             model,
             input_tensor,
             warmup=args.warmup,
@@ -442,11 +498,15 @@ def main() -> None:
                 input_tensor=input_tensor,
                 output_shape=output_shape,
                 timings_ms=timings_ms,
+                gpu_memory_stats=gpu_memory_stats,
                 warmup=args.warmup,
                 device=device,
                 dtype_name=args.dtype,
             )
         )
+        del model, input_tensor
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
     print_results(results)
     if args.output_csv is not None:
