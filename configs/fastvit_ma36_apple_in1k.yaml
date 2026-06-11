@@ -54,7 +54,7 @@ cooldown_epochs: 0
 # Preprocessing is resolved from timm pretrained_cfg in scripts/train_with_timm.py.
 
 # Loader and logging
-batch_size: 8
+batch_size: 200
 workers: 4
 seed: 42
 log_interval: 20
