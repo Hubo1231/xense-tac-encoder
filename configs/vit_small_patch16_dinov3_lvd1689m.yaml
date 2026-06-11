@@ -46,7 +46,7 @@ clip_grad:
 
 # Scheduler
 sched: cosine
-epochs: 25
+epochs: 200
 warmup_epochs: 1
 warmup_lr: 0.000001
 min_lr: 0.000001
@@ -55,7 +55,7 @@ cooldown_epochs: 0
 # Preprocessing is resolved from timm pretrained_cfg in scripts/train_with_timm.py.
 
 # Loader and logging
-batch_size: 200
+batch_size: 32
 workers: 4
 seed: 42
 log_interval: 20
