@@ -51,6 +51,7 @@ from timm.models import create_model, safe_model_name
 from timm.optim import create_optimizer_v2
 from timm.scheduler import create_scheduler_v2
 
+from src.models.mae import TactileMAE
 from src.models.vae import TactileVAE
 from src.training.data_loader import TactileDataset, list_images, split_image_paths
 from src.training.losses import LossWeights
@@ -68,7 +69,8 @@ _logger = logging.getLogger("train_with_timm")
 DEFAULT_CONFIG = "configs/vit_base_patch16_dinov3_lvd1689m.yaml"
 
 
-REQUIRED_KEYS: tuple[str, ...] = (
+# Keys required regardless of the training task (`task: vae | mae`).
+COMMON_REQUIRED_KEYS: tuple[str, ...] = (
     # Dataset
     "data_dir", "eval_ratio",
     # Model — every backbone goes through the standard
@@ -76,10 +78,7 @@ REQUIRED_KEYS: tuple[str, ...] = (
     # path with num_classes=0 hardcoded; no features_only switch.
     "model", "pretrained", "pretrained_path",
     "initial_checkpoint", "resume", "no_resume_opt",
-    "in_chans", "latent_dim", "decoder_hidden_channels",
-    # Loss
-    "w_mse", "w_grad", "w_kld", "w_ssim",
-    "w_mix", "mix_alpha", "use_ms_ssim",
+    "in_chans",
     # Device
     "device",
     # Optimizer / scheduler
@@ -91,6 +90,24 @@ REQUIRED_KEYS: tuple[str, ...] = (
     "log_wandb",
 )
 
+# VAE-only keys (latent projection + reconstruction loss weights).
+VAE_REQUIRED_KEYS: tuple[str, ...] = (
+    "latent_dim", "decoder_hidden_channels",
+    "w_mse", "w_grad", "w_kld", "w_ssim",
+    "w_mix", "mix_alpha", "use_ms_ssim",
+)
+
+# MAE defaults — every field is optional in YAML; the `mae:` block overrides these.
+MAE_DEFAULTS: dict[str, Any] = {
+    "mask_ratio": 0.75,
+    "decoder_embed_dim": 512,
+    "decoder_depth": 4,
+    "decoder_num_heads": 16,
+    "norm_pix_loss": True,
+}
+
+VALID_TASKS = ("vae", "mae")
+
 
 def _load_yaml(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
@@ -101,9 +118,16 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def _validate_config(config: MutableMapping[str, Any]) -> None:
-    missing = sorted(k for k in REQUIRED_KEYS if k not in config)
+    task = config.setdefault("task", "vae")
+    if task not in VALID_TASKS:
+        raise ValueError(f"task must be one of {VALID_TASKS}, got {task!r}.")
+
+    required = list(COMMON_REQUIRED_KEYS)
+    if task == "vae":
+        required += list(VAE_REQUIRED_KEYS)
+    missing = sorted(k for k in required if k not in config)
     if missing:
-        raise ValueError(f"Config is missing required keys: {', '.join(missing)}")
+        raise ValueError(f"Config (task={task}) is missing required keys: {', '.join(missing)}")
     if not 0.0 < config["eval_ratio"] < 1.0:
         raise ValueError("eval_ratio must be in (0, 1)")
 
@@ -205,6 +229,54 @@ def _build_vae(
         ),
         image_size=img_size,
     )
+
+
+def _build_mae(
+    args: SimpleNamespace,
+    timm_backbone: nn.Module,
+    data_config: Mapping[str, Any],
+) -> TactileMAE:
+    """Build a TactileMAE; requires a timm ViT (patch tokens)."""
+    is_vit = (
+        hasattr(timm_backbone, "patch_embed")
+        and hasattr(timm_backbone, "blocks")
+        and hasattr(timm_backbone, "_pos_embed")
+        and getattr(timm_backbone, "num_prefix_tokens", None) is not None
+    )
+    if not is_vit:
+        raise ValueError(
+            f"task=mae only supports ViT backbones (need patch_embed/blocks/_pos_embed); "
+            f"model={args.model!r} is not a ViT. Use a vit_*_dinov3 config, or set task=vae."
+        )
+
+    img_size = int(data_config["input_size"][-1])
+    patch_size = timm_backbone.patch_embed.patch_size
+    patch_size = patch_size[0] if isinstance(patch_size, (tuple, list)) else int(patch_size)
+
+    mae_cfg = {**MAE_DEFAULTS, **dict(getattr(args, "mae", {}) or {})}
+    args.mae = mae_cfg  # write back resolved values for logging / checkpoint args
+    return TactileMAE(
+        encoder_backbone=timm_backbone,
+        image_size=img_size,
+        patch_size=patch_size,
+        in_chans=int(args.in_chans),
+        mask_ratio=float(mae_cfg["mask_ratio"]),
+        decoder_embed_dim=int(mae_cfg["decoder_embed_dim"]),
+        decoder_depth=int(mae_cfg["decoder_depth"]),
+        decoder_num_heads=int(mae_cfg["decoder_num_heads"]),
+        norm_pix_loss=bool(mae_cfg["norm_pix_loss"]),
+    )
+
+
+def _build_model(
+    args: SimpleNamespace,
+    timm_backbone: nn.Module,
+    data_config: Mapping[str, Any],
+) -> nn.Module:
+    """Dispatch on ``args.task`` to build either a VAE or an MAE."""
+    if args.task == "mae":
+        return _build_mae(args, timm_backbone, data_config)
+    return _build_vae(args, timm_backbone, data_config)
 
 
 def _build_datasets(
@@ -384,6 +456,37 @@ def _load_checkpoint(
     return int(checkpoint.get("epoch", -1)) + 1, checkpoint.get("best_metric")
 
 
+def _update_meters(
+    meters: MutableMapping[str, Any], items: Mapping[str, float], batch_size: int
+) -> None:
+    """Accumulate every scalar loss term except ``total`` into per-key meters.
+
+    Works for both tasks without hardcoding term names: VAE emits mse/grad/kld/(ssim/mix),
+    MAE emits recon. New keys get a meter on first sight.
+    """
+    for key, value in items.items():
+        if key == "total":
+            continue
+        meter = meters.get(key)
+        if meter is None:
+            meter = meters[key] = utils.AverageMeter()
+        meter.update(value, batch_size)
+
+
+def _meters_summary(loss_avg: float, meters: Mapping[str, Any]) -> OrderedDict[str, float]:
+    summary: OrderedDict[str, float] = OrderedDict(loss=loss_avg)
+    for key, meter in meters.items():
+        summary[key] = meter.avg
+    return summary
+
+
+def _meters_postfix(loss_avg: float, meters: Mapping[str, Any]) -> dict[str, str]:
+    postfix = {"loss": f"{loss_avg:.4f}"}
+    for key, meter in meters.items():
+        postfix[key] = f"{meter.avg:.4f}"
+    return postfix
+
+
 def train_one_epoch(
     epoch: int,
     model: nn.Module,
@@ -395,10 +498,7 @@ def train_one_epoch(
 ) -> OrderedDict[str, float]:
     model.train()
     losses_m = utils.AverageMeter()
-    mse_m = utils.AverageMeter()
-    grad_m = utils.AverageMeter()
-    kld_m = utils.AverageMeter()
-    mix_m = utils.AverageMeter()
+    term_meters: OrderedDict[str, Any] = OrderedDict()
     batch_time_m = utils.AverageMeter()
 
     last_idx = len(loader) - 1
@@ -418,31 +518,21 @@ def train_one_epoch(
         items = _loss_items(loss_dict)
         bs = batch.shape[0]
         losses_m.update(items["total"], bs)
-        mse_m.update(items.get("mse", 0.0), bs)
-        grad_m.update(items.get("grad", 0.0), bs)
-        kld_m.update(items.get("kld", 0.0), bs)
-        mix_m.update(items.get("mix", 0.0), bs)
+        _update_meters(term_meters, items, bs)
         batch_time_m.update(time.time() - end)
         end = time.time()
         lr = _avg_lr(optimizer)
-        progress.set_postfix(
-            loss=f"{losses_m.avg:.4f}",
-            mse=f"{mse_m.avg:.4f}",
-            kld=f"{kld_m.avg:.4f}",
-            mix=f"{mix_m.avg:.4f}",
-            lr=f"{lr:.2e}",
-        )
+        progress.set_postfix(lr=f"{lr:.2e}", **_meters_postfix(losses_m.avg, term_meters))
 
         if batch_idx % args.log_interval == 0 or batch_idx == last_idx:
+            terms = " ".join(f"{k.upper()} {m.avg:.4f}" for k, m in term_meters.items())
             _logger.info(
-                "Train: %d [%4d/%d] Loss %.4f (%.4f) MSE %.4f Grad %.4f KLD %.4f Mix %.4f Time %.3fs LR %.3e",
+                "Train: %d [%4d/%d] Loss %.4f (%.4f) %s Time %.3fs LR %.3e",
                 epoch, batch_idx, len(loader),
-                losses_m.val, losses_m.avg,
-                mse_m.avg, grad_m.avg, kld_m.avg, mix_m.avg,
-                batch_time_m.val, lr,
+                losses_m.val, losses_m.avg, terms, batch_time_m.val, lr,
             )
 
-    return OrderedDict(loss=losses_m.avg, mse=mse_m.avg, grad=grad_m.avg, kld=kld_m.avg, mix=mix_m.avg)
+    return _meters_summary(losses_m.avg, term_meters)
 
 
 @torch.inference_mode()
@@ -455,10 +545,7 @@ def validate(
 ) -> OrderedDict[str, float]:
     model.eval()
     losses_m = utils.AverageMeter()
-    mse_m = utils.AverageMeter()
-    grad_m = utils.AverageMeter()
-    kld_m = utils.AverageMeter()
-    mix_m = utils.AverageMeter()
+    term_meters: OrderedDict[str, Any] = OrderedDict()
     batch_time_m = utils.AverageMeter()
 
     end = time.time()
@@ -471,29 +558,20 @@ def validate(
         items = _loss_items(loss_dict)
         bs = batch.shape[0]
         losses_m.update(items["total"], bs)
-        mse_m.update(items.get("mse", 0.0), bs)
-        grad_m.update(items.get("grad", 0.0), bs)
-        kld_m.update(items.get("kld", 0.0), bs)
-        mix_m.update(items.get("mix", 0.0), bs)
+        _update_meters(term_meters, items, bs)
         batch_time_m.update(time.time() - end)
         end = time.time()
-        progress.set_postfix(
-            loss=f"{losses_m.avg:.4f}",
-            mse=f"{mse_m.avg:.4f}",
-            kld=f"{kld_m.avg:.4f}",
-            mix=f"{mix_m.avg:.4f}",
-        )
+        progress.set_postfix(**_meters_postfix(losses_m.avg, term_meters))
 
         if batch_idx % args.log_interval == 0 or batch_idx == last_idx:
+            terms = " ".join(f"{k.upper()} {m.avg:.4f}" for k, m in term_meters.items())
             _logger.info(
-                "Eval: [%4d/%d] Loss %.4f (%.4f) MSE %.4f Grad %.4f KLD %.4f Mix %.4f Time %.3fs",
+                "Eval: [%4d/%d] Loss %.4f (%.4f) %s Time %.3fs",
                 batch_idx, len(loader),
-                losses_m.val, losses_m.avg,
-                mse_m.avg, grad_m.avg, kld_m.avg, mix_m.avg,
-                batch_time_m.val,
+                losses_m.val, losses_m.avg, terms, batch_time_m.val,
             )
 
-    return OrderedDict(loss=losses_m.avg, mse=mse_m.avg, grad=grad_m.avg, kld=kld_m.avg, mix=mix_m.avg)
+    return _meters_summary(losses_m.avg, term_meters)
 
 
 def _parse_cli() -> Path:
@@ -544,15 +622,16 @@ def main() -> None:
     data_config = resolve_data_config({}, model=timm_backbone, verbose=True)
     args.img_size = int(data_config["input_size"][-1])
     args.input_size = tuple(data_config["input_size"])
-    model = _build_vae(args, timm_backbone, data_config).to(device)
+    model = _build_model(args, timm_backbone, data_config).to(device)
 
     if args.initial_checkpoint:
         _load_checkpoint(args.initial_checkpoint, model=model, model_only=True)
 
     param_count = sum(p.numel() for p in model.parameters())
     _logger.info(
-        "Model %s VAE created: params %.2fM, encoder features %s",
+        "Model %s %s created: params %.2fM, encoder features %s",
         safe_model_name(args.model),
+        args.task.upper(),
         param_count / 1e6,
         getattr(args, "encoder_feature_dim", "unknown"),
     )
@@ -589,7 +668,7 @@ def main() -> None:
         lr_scheduler.step(start_epoch)
 
     exp_name = args.experiment or "-".join(
-        [datetime.now().strftime("%Y%m%d-%H%M%S"), safe_model_name(args.model), f"vae{args.img_size}"]
+        [datetime.now().strftime("%Y%m%d-%H%M%S"), safe_model_name(args.model), f"{args.task}{args.img_size}"]
     )
     output_dir = Path(utils.get_outdir(args.output, exp_name))
     with open(output_dir / "args.yaml", "w", encoding="utf-8") as f:
