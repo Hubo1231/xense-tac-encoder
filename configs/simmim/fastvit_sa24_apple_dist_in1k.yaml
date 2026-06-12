@@ -24,20 +24,12 @@ initial_checkpoint: ""
 resume: ""
 no_resume_opt: false
 in_chans: 3
-latent_dim: 256
-decoder_hidden_channels: 512
-decoder_hidden_spatial:
 model_kwargs: {}
 
-# Loss
-# 重建项完全使用 mix loss = α(1-MS_SSIM) + (1-α)L1，关掉 MSE/grad。
-w_mse: 0.0
-w_grad: 0.0
-w_kld: 0.01
-w_ssim: 0.0
-w_mix: 1.0
-mix_alpha: 0.84
-use_ms_ssim: true
+# SimMIM 超参（仅 task: simmim 生效；缺省见 train_with_timm.py 的 SIMMIM_DEFAULTS）
+simmim:
+  mask_patch_size: 32
+  mask_ratio: 0.6
 
 # Device
 device: auto
@@ -70,7 +62,7 @@ experiment: ""
 # wandb
 log_wandb: true
 wandb_project: xense-tac-encoder
-wandb_name: "fastvit_sa24_apple_dist_in1k"
+wandb_name: "fastvit_sa24_apple_dist_in1k_simmim"
 wandb_log_images: true
 wandb_image_interval: 1
 wandb_num_images: 8

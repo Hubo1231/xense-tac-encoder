@@ -70,18 +70,34 @@ python scripts/train_with_timm.py --config configs/vae/vit_base_patch16_dinov3_l
 
 ## 3. Config schema 变更
 
-### 3.1 新增任务开关
+### 3.0 目录布局：config 按任务分目录
 
-所有 config 顶层新增一个字段（缺省回退 `vae`，保证旧 config 不破）：
+config 已**按任务拆成三个子目录**，每个 config 只携带「公共字段 + 本任务字段」，互不污染：
+
+```
+configs/
+  vae/      # 13 个：VAE 重建（携带 latent_dim/decoder_hidden_* + w_mse/.../use_ms_ssim 损失权重）
+  mae/      # 4 个 ：token-drop MAE（仅 ViT；携带 mae: 子块，无 VAE 损失权重）
+  simmim/   # 13 个：SimMIM 掩码重建（任意 backbone；携带 simmim: 子块，无 VAE 损失权重）
+```
+
+批量脚本各读自己的目录：`run_all_timm.sh`→`configs/vae/`、`run_all_mae.sh`→`configs/mae/`、
+`run_all_simmim.sh`→`configs/simmim/`。**精简原则**：MAE / SimMIM 的 config 去掉 VAE 专属字段
+（`latent_dim` / `decoder_hidden_channels` / `decoder_hidden_spatial` / `w_*` / `mix_alpha` / `use_ms_ssim`），
+VAE 的 config 不带 `mae:` / `simmim:` 子块。
+
+### 3.1 任务开关
+
+每个 config 顶层声明 `task`（缺省回退 `vae`，保证旧 config 不破）：
 
 ```yaml
-# 训练任务：vae（默认） | mae
+# 训练任务：vae（默认） | mae | simmim
 task: vae
 ```
 
-### 3.2 MAE 专属超参（仅 `task: mae` 需要）
+### 3.2 各任务专属超参子块
 
-新增一个 `mae:` 子块，集中放 MAE 超参，避免污染顶层 VAE 字段：
+- **MAE**（仅 `task: mae`，放在 `configs/mae/*.yaml`）：
 
 ```yaml
 mae:
@@ -92,17 +108,27 @@ mae:
   norm_pix_loss: true       # 对每个 patch 做 (x-mean)/std 归一化后再算 MSE（MAE 论文推荐）
 ```
 
+- **SimMIM**（仅 `task: simmim`，放在 `configs/simmim/*.yaml`）：
+
+```yaml
+simmim:
+  mask_patch_size: 32       # 掩码块边长（在输入分辨率上；需整除输入边长，32 对 224/256/448 都成立）
+  mask_ratio: 0.6           # 被 mask 的块比例（SimMIM 默认 0.6）
+```
+
+两个子块的字段都可缺省，缺省值见 `train_with_timm.py` 的 `MAE_DEFAULTS` / `SIMMIM_DEFAULTS`。
+
 ### 3.3 配置校验（`train_with_timm.py` 的 `_validate_config`）
 
-把校验改成**任务感知**：
+校验是**任务感知**的：
 
-- `task in {"vae", "mae"}`，否则报错。
-- `task == "vae"`：保持现有 `REQUIRED_KEYS`（loss 权重等仍然必填）。
-- `task == "mae"`：放宽 VAE 专属键（`w_mse/w_grad/w_kld/w_ssim/w_mix/mix_alpha/use_ms_ssim/latent_dim/
-  decoder_hidden_channels` 等）为可选；`mae` 子块各字段给默认值，缺失则取默认而非报错。
+- `task in {"vae", "mae", "simmim"}`，否则报错。
+- `task == "vae"`：必填 `COMMON_REQUIRED_KEYS + VAE_REQUIRED_KEYS`（loss 权重、latent 维度等）。
+- `task in {"mae", "simmim"}`：只必填 `COMMON_REQUIRED_KEYS`；VAE 专属键不再要求，`mae:` / `simmim:`
+  子块各字段缺失则取默认而非报错。
 
-实现上把 `REQUIRED_KEYS` 拆成 `COMMON_REQUIRED_KEYS`（dataset / 优化器 / 调度 / loader / logging）
-+ `VAE_REQUIRED_KEYS`，按 `task` 取并集。
+实现上把必填键拆成 `COMMON_REQUIRED_KEYS`（dataset / 优化器 / 调度 / loader / logging）
++ `VAE_REQUIRED_KEYS`，按 `task` 取并集。另支持 `--task {vae,mae,simmim}` 命令行覆盖（校验前生效）。
 
 ## 4. 模型设计：`src/models/mae.py` 中的 `TactileMAE`
 

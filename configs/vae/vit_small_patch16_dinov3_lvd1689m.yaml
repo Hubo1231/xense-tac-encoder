@@ -69,7 +69,7 @@ experiment: ""
 # wandb
 log_wandb: true
 wandb_project: xense-tac-encoder
-wandb_name: "vit_small_patch16_dinov3_lvd1689m"
+wandb_name: "vit_small_patch16_dinov3_lvd1689m_vae"
 wandb_log_images: true
 wandb_image_interval: 1
 wandb_num_images: 8

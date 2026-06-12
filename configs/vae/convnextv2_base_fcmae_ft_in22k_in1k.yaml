@@ -68,7 +68,7 @@ experiment: ""
 # wandb
 log_wandb: true
 wandb_project: xense-tac-encoder
-wandb_name: "convnextv2_base_fcmae_ft_in22k_in1k"
+wandb_name: "convnextv2_base_fcmae_ft_in22k_in1k_vae"
 wandb_log_images: true
 wandb_image_interval: 1
 wandb_num_images: 8

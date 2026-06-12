@@ -1,6 +1,6 @@
 # Pre-train a tactile-image MAE with a timm DINOv3 ViT encoder.
 # Run:
-#   ./scripts/run_all_timm.sh vit_base_patch16_dinov3_lvd1689m_mae
+#   ./scripts/run_all_mae.sh vit_base_patch16_dinov3_lvd1689m_mae
 #   # or: python scripts/train_with_timm.py --config configs/mae/vit_base_patch16_dinov3_lvd1689m_mae.yaml
 
 # Training task
