@@ -52,6 +52,7 @@ from timm.optim import create_optimizer_v2
 from timm.scheduler import create_scheduler_v2
 
 from src.models.mae import TactileMAE
+from src.models.simmim import TactileSimMIM
 from src.models.vae import TactileVAE
 from src.training.data_loader import TactileDataset, list_images, split_image_paths
 from src.training.losses import LossWeights
@@ -106,7 +107,13 @@ MAE_DEFAULTS: dict[str, Any] = {
     "norm_pix_loss": True,
 }
 
-VALID_TASKS = ("vae", "mae")
+# SimMIM defaults — backbone-agnostic masked image modeling; `simmim:` block overrides.
+SIMMIM_DEFAULTS: dict[str, Any] = {
+    "mask_patch_size": 32,
+    "mask_ratio": 0.6,
+}
+
+VALID_TASKS = ("vae", "mae", "simmim")
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -132,11 +139,15 @@ def _validate_config(config: MutableMapping[str, Any]) -> None:
         raise ValueError("eval_ratio must be in (0, 1)")
 
 
-def _load_config(config_path: Path) -> tuple[SimpleNamespace, str]:
+def _load_config(config_path: Path, task_override: str | None = None) -> tuple[SimpleNamespace, str]:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file does not exist: {config_path}")
     config = _load_yaml(config_path)
     config["config"] = str(config_path)
+    if task_override is not None:
+        # CLI --task wins over the config's own `task`; applied before validation so the
+        # task-specific required-key set is checked correctly.
+        config["task"] = task_override
     _validate_config(config)
     args_text = yaml.safe_dump(config, default_flow_style=False, sort_keys=False)
     return SimpleNamespace(**config), args_text
@@ -268,14 +279,34 @@ def _build_mae(
     )
 
 
+def _build_simmim(
+    args: SimpleNamespace,
+    timm_backbone: nn.Module,
+    data_config: Mapping[str, Any],
+) -> TactileSimMIM:
+    """Build a TactileSimMIM; works with any timm backbone via forward_features."""
+    img_size = int(data_config["input_size"][-1])
+    cfg = {**SIMMIM_DEFAULTS, **dict(getattr(args, "simmim", {}) or {})}
+    args.simmim = cfg  # write back resolved values for logging / checkpoint args
+    return TactileSimMIM(
+        encoder_backbone=timm_backbone,
+        image_size=img_size,
+        in_chans=int(args.in_chans),
+        mask_patch_size=int(cfg["mask_patch_size"]),
+        mask_ratio=float(cfg["mask_ratio"]),
+    )
+
+
 def _build_model(
     args: SimpleNamespace,
     timm_backbone: nn.Module,
     data_config: Mapping[str, Any],
 ) -> nn.Module:
-    """Dispatch on ``args.task`` to build either a VAE or an MAE."""
+    """Dispatch on ``args.task`` to build a VAE, an MAE, or a SimMIM model."""
     if args.task == "mae":
         return _build_mae(args, timm_backbone, data_config)
+    if args.task == "simmim":
+        return _build_simmim(args, timm_backbone, data_config)
     return _build_vae(args, timm_backbone, data_config)
 
 
@@ -574,8 +605,8 @@ def validate(
     return _meters_summary(losses_m.avg, term_meters)
 
 
-def _parse_cli() -> Path:
-    parser = argparse.ArgumentParser(description="Train a tactile-image VAE with a timm encoder.")
+def _parse_cli() -> tuple[Path, str | None]:
+    parser = argparse.ArgumentParser(description="Train a tactile-image self-supervised model with a timm encoder.")
     parser.add_argument(
         "-c", "--config",
         type=str,
@@ -586,20 +617,31 @@ def _parse_cli() -> Path:
             "'resnet50_a1_in1k.yaml')."
         ),
     )
+    parser.add_argument(
+        "-t", "--task",
+        type=str,
+        default=None,
+        choices=VALID_TASKS,
+        help=(
+            "Override the config's `task` (vae|mae|simmim). Lets one config set run different "
+            "self-supervised tasks without duplicating YAML, e.g. `--task simmim`."
+        ),
+    )
     args = parser.parse_args()
+    task_override = args.task
 
     raw = args.config
     candidate = Path(raw)
     if candidate.is_absolute() and candidate.exists():
-        return candidate
+        return candidate, task_override
 
     repo_root = Path(__file__).resolve().parents[1]
     rel = repo_root / raw
     if rel.exists():
-        return rel
+        return rel, task_override
     in_configs = repo_root / "configs" / raw
     if in_configs.exists():
-        return in_configs
+        return in_configs, task_override
     raise FileNotFoundError(
         f"Could not locate config '{raw}'. Tried: {candidate}, {rel}, {in_configs}."
     )
@@ -607,9 +649,9 @@ def _parse_cli() -> Path:
 
 def main() -> None:
     utils.setup_default_logging()
-    config_path = _parse_cli()
+    config_path, task_override = _parse_cli()
     _logger.info("Loading config from %s", config_path)
-    args, args_text = _load_config(config_path)
+    args, args_text = _load_config(config_path, task_override=task_override)
 
     device = _resolve_device(args.device)
     if device.type == "cuda":

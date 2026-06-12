@@ -2,29 +2,39 @@
 
 ## 0. 如何执行（TL;DR）
 
-任务由 config 顶层的 `task: vae | mae` 决定（缺省 `vae`，旧 config 不受影响）。
+任务由 config 顶层 `task: vae | mae | simmim` 决定（缺省 `vae`，旧 config 不受影响），也可用
+`--task` 在命令行临时覆盖。三种自监督任务 + 两个批量脚本：
 
 ```bash
-# —— MAE 预训练（ViT，如 dinov3）——
-./scripts/run_all_timm.sh vit_base_patch16_dinov3_lvd1689m_mae
-# 等价地直接调脚本：
+# —— SimMIM 掩码预训练（任意 backbone：卷积 / 混合 / ViT 全可）——
+./scripts/run_all_simmim.sh                       # 跑全部 13 个 backbone 的 SimMIM
+./scripts/run_all_simmim.sh resnet50_a1_in1k      # 指定某个
+python scripts/train_with_timm.py --config configs/resnet50_a1_in1k.yaml --task simmim
+
+# —— MAE 掩码预训练（仅 ViT：3 个 dinov3 small/base/large）——
+./scripts/run_all_mae.sh                           # 跑全部 *_mae.yaml
 python scripts/train_with_timm.py --config configs/vit_base_patch16_dinov3_lvd1689m_mae.yaml
 
 # —— VAE 预训练（原有任务，任意 backbone）——
-./scripts/run_all_timm.sh vit_base_patch16_dinov3_lvd1689m
-python scripts/train_with_timm.py --config configs/vit_base_patch16_dinov3_lvd1689m.yaml
-
-# —— 跑全部 configs / 指定多个 ——
 ./scripts/run_all_timm.sh
-./scripts/run_all_timm.sh resnet50_a1_in1k vit_base_patch16_dinov3_lvd1689m_mae
+python scripts/train_with_timm.py --config configs/vit_base_patch16_dinov3_lvd1689m.yaml
 ```
 
+三任务对比：
+
+| task | 适用 backbone | 机制 | 批量脚本 |
+|---|---|---|---|
+| `vae` | 任意 | 池化 embedding → 反卷积重建整图 | `run_all_timm.sh` |
+| `mae` | **仅 ViT** | patch token 丢弃 + 轻量 transformer decoder（§4） | `run_all_mae.sh`（跑 `*_mae.yaml`） |
+| `simmim` | **任意** | 像素层掩码 + forward_features 特征图 + 1×1 卷积/PixelShuffle 解码（§13） | `run_all_simmim.sh`（`--task simmim` 覆盖全部基础 config） |
+
 要点：
-- `task: mae` **只支持 ViT backbone**（需要 patch token），对卷积 backbone 会直接报错；`task: vae` 通用。
-- MAE 超参写在 config 的 `mae:` 子块（`mask_ratio` / `decoder_embed_dim` / `decoder_depth` /
-  `decoder_num_heads` / `norm_pix_loss`），缺省值见 `scripts/train_with_timm.py` 的 `MAE_DEFAULTS`。
-- 输出（checkpoint / summary.csv / args.yaml / wandb 重建图）落在 `outputs/<实验名>/`，实验名含 `mae<img_size>`。
-- 日志/可视化复用现有流程：MAE 打印 `loss`+`recon`，wandb 重建图为「可见 patch 贴原图 + mask patch 用预测」的整图。
+- `task: mae` 只支持 ViT，对卷积 backbone 直接报错；`vae` / `simmim` 对任意 backbone 通用。
+- MAE 超参写在 config 的 `mae:` 子块；SimMIM 写在 `simmim:` 子块（`mask_patch_size` / `mask_ratio`），
+  缺省值见 `scripts/train_with_timm.py` 的 `MAE_DEFAULTS` / `SIMMIM_DEFAULTS`。
+- `--task {vae,mae,simmim}` 命令行覆盖 config 的 `task`，使一套基础 config 无需复制即可跑不同任务
+  （`run_all_simmim.sh` 正是据此对全部 backbone 跑 SimMIM）。
+- 日志/可视化复用现有流程：掩码任务打印 `loss`+`recon`，wandb 重建图为「可见区域贴原图 + 掩码区域用预测」。
 
 ---
 
@@ -490,5 +500,64 @@ wandb_num_images: 8
 3. 加 MAE 示例 config，跑 1~2 epoch 端到端验证。
 4. 给现有 config 补 `task: vae`，跑一次 VAE 回归。
 5. 更新 `README.md` 简述两种任务的用法。
-</content>
-</invoke>
+
+## 13. SimMIM 任务（让全部 13 个 backbone 都能跑掩码预训练）
+
+MAE（token-drop）只适用于 ViT；卷积/混合 backbone（ResNet / ConvNeXt / EfficientViT / MobileNetV4 /
+FastViT）没有可丢弃的 patch token 序列。为让**所有 config 都能跑掩码预训练**，新增 `task: simmim`。
+
+### 13.1 与 MAE 的本质区别
+
+| | MAE（§4） | SimMIM（本节） |
+|---|---|---|
+| 掩码位置 | patch token 级，编码前丢弃 | **输入/像素层**，遮挡后整图照常前向 |
+| backbone 接口 | 复用 ViT 内部 `patch_embed/blocks` | 黑盒 `forward_features`，**任意 backbone 通用** |
+| encoder 是否看到掩码区 | 否（只编码可见 token，省算力） | 是（看到被遮挡的整图，不省算力） |
+| decoder | 轻量 transformer | 单层 `1×1 卷积 + PixelShuffle` |
+| 适用 | 仅 ViT | 卷积 / 混合 / ViT 全可 |
+
+### 13.2 `TactileSimMIM`（`src/models/simmim.py`）
+
+构造时**干跑一次** `forward_features(zeros)` 确定特征图尺寸与下采样步长：
+
+- 卷积 backbone：`forward_features -> (B, C, h, w)`，直接用；
+- ViT：`forward_features -> (B, P+N, C)`，丢前缀 token 后 reshape 成 `(B, C, √N, √N)`。
+
+记 `encoder_stride = image_size // h`（实测：卷积均为 32，dinov3 patch16 为 16）。前向：
+
+```python
+def forward(self, x):
+    mask = self._random_mask(B, x.device)          # (B,1,H,W)，在 mask_patch_size 粒度上随机选块
+    x_masked = x * (1 - mask) + self.mask_token * mask   # 像素层遮挡（mask_token 为可学习 (1,3,1,1)）
+    feat = self._to_feature_map(self.encoder.forward_features(x_masked))  # (B,C,h,w)
+    pred = self.decoder(feat)                       # 1×1 卷积 -> PixelShuffle(stride) -> (B,3,H,W)
+    return pred, mask
+
+def compute_loss(self, batch):
+    pred, mask = self.forward(batch)
+    loss = F.l1_loss(pred, batch, reduction='none')
+    loss = (loss * mask).sum() / (mask.sum() * in_chans + 1e-5)   # 只在被 mask 像素上算 L1
+    return {"total": loss, "recon": loss}
+```
+
+> 解码器是 SimMIM 的「单层预测头」：把 `(B,C,h,w)` 特征图用 `Conv2d(C, stride²·3, 1)` + `PixelShuffle(stride)`
+> 直接上采样回输入分辨率。`reconstruct()` 同样输出「可见区域贴原图 + 掩码区域用预测」的整图供 wandb 可视化。
+
+设计取舍：原版 SimMIM 对 ViT 在 embedding 层注入 mask token；这里为了**一套代码覆盖所有 backbone**，
+统一在**像素层**打掩码——对卷积网络是必须的，对 ViT 是等价可用的简化。
+
+### 13.3 配置与运行机制
+
+- `simmim:` 子块超参：`mask_patch_size`（默认 32）、`mask_ratio`（默认 0.6）；缺省见 `SIMMIM_DEFAULTS`。
+- 新增 `--task {vae,mae,simmim}` 命令行覆盖（在校验前生效），使一套基础 config 无需复制即可切任务。
+- `scripts/run_all_simmim.sh`：对 `configs/` 下全部基础 config（排除 `*_mae.yaml`，共 13 个）加
+  `--task simmim` 顺序跑；`scripts/run_all_mae.sh`：对 `configs/*_mae.yaml`（3 个 ViT）跑 MAE。
+  两脚本均沿用 `run_all_timm.sh` 的日志 / 失败隔离 / 汇总骨架。
+
+### 13.4 验证（已通过）
+
+- 模型 smoke：`resnet50 / convnextv2 / fastvit_t12 / mobilenetv4 / vit_small` 均跑通 compute_loss /
+  backward / reconstruct / encode，重建输出回到输入分辨率（卷积 stride32、ViT stride16）。
+- 集成：`--task simmim` 覆盖 vae config → `TactileSimMIM`；`train_one_epoch`+`validate` 在合成数据上
+  loss 正常、summary 含 `loss/recon`；三任务 dispatch（vae/mae/simmim）与 conv+mae 报错路径均正确。
+- 脚本：`run_all_mae.sh` 默认选中 3 个 `*_mae.yaml`，`run_all_simmim.sh` 默认选中 13 个基础 config。

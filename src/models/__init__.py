@@ -6,6 +6,7 @@ import torch.nn as nn
 
 from .backbones import available_backbones, build_backbone
 from .mae import TactileMAE
+from .simmim import TactileSimMIM
 from .vae import TactileAutoencoder, TactileVAE
 from src.training.losses import LossWeights
 
@@ -96,6 +97,7 @@ def build_model(name: str, **kwargs) -> nn.Module:
 __all__ = [
     "TactileAutoencoder",
     "TactileMAE",
+    "TactileSimMIM",
     "TactileVAE",
     "available_backbones",
     "available_models",

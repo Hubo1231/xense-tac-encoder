@@ -1,0 +1,67 @@
+# Pre-train a tactile-image MAE with a timm DINOv3 ViT-S encoder.
+# Run:
+#   ./scripts/run_all_mae.sh vit_small_patch16_dinov3_lvd1689m_mae
+#   # or: python scripts/train_with_timm.py --config configs/vit_small_patch16_dinov3_lvd1689m_mae.yaml
+
+# 训练任务：vae | mae
+task: mae
+
+# Dataset
+data_dir: pngs
+eval_ratio: 0.2
+
+# Model
+# timm registered model name: vit_small_patch16_dinov3.lvd1689m
+#   input_size: (3, 256, 256), patch16 -> 16x16=256 patch tokens, num_prefix_tokens=5 (1 cls + 4 reg)
+model: vit_small_patch16_dinov3.lvd1689m
+pretrained: true
+pretrained_path: "checkpoint/vit_small_patch16_dinov3_lvd1689m/model.safetensors"
+initial_checkpoint: ""
+resume: ""
+no_resume_opt: false
+in_chans: 3
+model_kwargs: {}
+
+# MAE 超参（仅 task: mae 生效；缺省见 train_with_timm.py 的 MAE_DEFAULTS）
+mae:
+  mask_ratio: 0.75
+  decoder_embed_dim: 512
+  decoder_depth: 4
+  decoder_num_heads: 16
+  norm_pix_loss: true
+
+# Device
+device: auto
+
+# Optimizer
+opt: adamw
+lr: 0.0001
+weight_decay: 0.05
+clip_grad:
+
+# Scheduler
+sched: cosine
+epochs: 100
+warmup_epochs: 10
+warmup_lr: 0.000001
+min_lr: 0.000001
+cooldown_epochs: 0
+
+# Preprocessing is resolved from timm pretrained_cfg in scripts/train_with_timm.py.
+
+# Loader and logging
+batch_size: 64
+workers: 4
+seed: 42
+log_interval: 20
+val_interval: 1
+output: outputs
+experiment: ""
+
+# wandb
+log_wandb: true
+wandb_project: xense-tac-encoder
+wandb_name: "vit_small_patch16_dinov3_lvd1689m_mae"
+wandb_log_images: true
+wandb_image_interval: 1
+wandb_num_images: 8
