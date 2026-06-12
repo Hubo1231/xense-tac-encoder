@@ -7,7 +7,7 @@
 task: mae
 
 # Dataset
-data_dir: data
+data_dir: pngs
 eval_ratio: 0.2
 
 # Model
@@ -41,7 +41,7 @@ clip_grad:
 
 # Scheduler
 sched: cosine
-epochs: 400
+epochs: 100
 warmup_epochs: 10
 warmup_lr: 0.000001
 min_lr: 0.000001
