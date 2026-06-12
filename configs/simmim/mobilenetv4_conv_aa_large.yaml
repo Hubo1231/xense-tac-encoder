@@ -1,26 +1,24 @@
-# Train a tactile-image VAE with a timm FastViT-MA36 encoder.
+# Pre-train a tactile-image SimMIM with a timm MobileNetV4 encoder.
 # Run:
-#   python scripts/train_with_timm.py --config configs/fastvit_ma36_apple_dist_in1k.yaml
+#   python scripts/train_with_timm.py
+
+# Training task
+task: simmim
 
 # Dataset
 data_dir: pngs
 eval_ratio: 0.2
 
 # Model
-# Requested HF model id: timm/fastvit_ma36.apple_dist_in1k
-# timm registered model name: fastvit_ma36.apple_dist_in1k
-# timm pretrained_cfg:
-#   input_size: (3, 256, 256)
-#   num_features: 1216
-#   model(x) embedding output with num_classes=0: (B, 1216)
-model: fastvit_ma36.apple_dist_in1k
-pretrained: true
-pretrained_path: "checkpoint/fastvit_ma36_apple_dist_in1k/model.safetensors"
-reparameterize: true
+model: mobilenetv4_conv_aa_large
+pretrained: false
+features_only: false
+pretrained_path: "checkpoint/mobilenetv4_conv_aa_large_e230_r448_in12k_ft_in1k/model.safetensors"
 initial_checkpoint: ""
 resume: ""
 no_resume_opt: false
 in_chans: 3
+#input_size: [3, 256, 256]
 latent_dim: 256
 decoder_hidden_channels: 512
 decoder_hidden_spatial:
@@ -67,7 +65,7 @@ experiment: ""
 # wandb
 log_wandb: true
 wandb_project: xense-tac-encoder
-wandb_name: "fastvit_ma36_apple_dist_in1k"
+wandb_name: "mobilenetv4_conv_aa_large"
 wandb_log_images: true
 wandb_image_interval: 1
 wandb_num_images: 8

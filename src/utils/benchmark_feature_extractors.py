@@ -9,13 +9,13 @@ Typical commands:
 
     # Benchmark a single timm encoder using a project config.
     python src/utils/benchmark_feature_extractors.py \
-        --config configs/fastvit_ma36_apple_in1k.yaml \
+        --config configs/vae/fastvit_ma36_apple_in1k.yaml \
         --warmup 50 \
         --iters 500
 
     # Benchmark without loading local checkpoint weights.
     python src/utils/benchmark_feature_extractors.py \
-        --config configs/fastvit_ma36_apple_in1k.yaml \
+        --config configs/vae/fastvit_ma36_apple_in1k.yaml \
         --ignore-config-pretrained-path \
         --warmup 50 \
         --iters 500

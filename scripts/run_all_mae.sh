@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 顺序运行 scripts/train_with_timm.py，跑 MAE 掩码预训练（token-drop MAE）。
-# MAE 只适用于 ViT backbone，因此默认跑 configs 下的 *_mae.yaml（当前为 3 个 dinov3 ViT：small/base/large）。
+# MAE 只适用于 ViT backbone，因此默认跑 configs/mae 下的 *.yaml。
 #
 # 用法：
-#   ./scripts/run_all_mae.sh                                  # 跑全部 *_mae.yaml
+#   ./scripts/run_all_mae.sh                                  # 跑全部 configs/mae/*.yaml
 #   ./scripts/run_all_mae.sh vit_base_patch16_dinov3_lvd1689m_mae   # 只跑指定（可省略 .yaml）
 #   ./scripts/run_all_mae.sh vit_small_patch16_dinov3_lvd1689m_mae vit_large_patch16_dinov3_lvd1689m_mae
 #
@@ -15,7 +15,7 @@ set -o pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-CONFIG_DIR="configs"
+CONFIG_DIR="configs/mae"
 LOG_DIR="logs"
 TASK="mae"
 mkdir -p "$LOG_DIR"
@@ -23,15 +23,15 @@ mkdir -p "$LOG_DIR"
 if [[ $# -gt 0 ]]; then
     REQUESTED=("$@")
 else
-    # 默认：configs 下全部 *_mae.yaml。
+    # 默认：configs/mae 下全部 yaml。
     REQUESTED=()
     while IFS= read -r -d '' f; do
         REQUESTED+=("$(basename "$f")")
-    done < <(find "$CONFIG_DIR" -maxdepth 1 -name '*_mae.yaml' -print0 | sort -z)
+    done < <(find "$CONFIG_DIR" -maxdepth 1 -name '*.yaml' -print0 | sort -z)
 fi
 
 if [[ ${#REQUESTED[@]} -eq 0 ]]; then
-    echo "No *_mae.yaml configs found under $CONFIG_DIR." >&2
+    echo "No configs found under $CONFIG_DIR." >&2
     exit 1
 fi
 

@@ -1,21 +1,22 @@
-# Train a tactile-image VAE with a timm FastViT-SA12 encoder.
+# Pre-train a tactile-image SimMIM with a timm FastViT encoder.
 # Run:
-#   python scripts/train_with_timm.py --config configs/fastvit_sa12_apple_dist_in1k.yaml
+#   python scripts/train_with_timm.py
+
+# Training task
+task: simmim
 
 # Dataset
 data_dir: pngs
 eval_ratio: 0.2
 
 # Model
-# Requested HF model id: timm/fastvit_sa12.apple_dist_in1k
-# timm registered model name: fastvit_sa12.apple_dist_in1k
 # timm pretrained_cfg:
 #   input_size: (3, 256, 256)
-#   num_features: 1024
-#   model(x) embedding output with num_classes=0: (B, 1024)
-model: fastvit_sa12.apple_dist_in1k
+#   num_features: 1216
+#   model(x) embedding output with num_classes=0: (B, 1216)
+model: fastvit_ma36.apple_in1k
 pretrained: true
-pretrained_path: "checkpoint/fastvit_sa12_apple_dist_in1k/model.safetensors"
+pretrained_path: "checkpoint/fastvit_ma36_apple_in1k/model.safetensors"
 reparameterize: true
 initial_checkpoint: ""
 resume: ""
@@ -67,7 +68,7 @@ experiment: ""
 # wandb
 log_wandb: true
 wandb_project: xense-tac-encoder
-wandb_name: "fastvit_sa12_apple_dist_in1k"
+wandb_name: "fastvit_ma36_apple_in1k_2"
 wandb_log_images: true
 wandb_image_interval: 1
 wandb_num_images: 8

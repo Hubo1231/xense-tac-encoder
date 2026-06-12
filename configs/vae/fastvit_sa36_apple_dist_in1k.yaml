@@ -1,6 +1,9 @@
 # Train a tactile-image VAE with a timm FastViT-SA36 encoder.
 # Run:
-#   python scripts/train_with_timm.py --config configs/fastvit_sa36_apple_dist_in1k.yaml
+#   python scripts/train_with_timm.py --config configs/vae/fastvit_sa36_apple_dist_in1k.yaml
+
+# Training task
+task: vae
 
 # Dataset
 data_dir: pngs

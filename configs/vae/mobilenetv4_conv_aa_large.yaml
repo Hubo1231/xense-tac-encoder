@@ -1,8 +1,8 @@
-# Train a tactile-image VAE with a timm DINOv3 ViT encoder.
+# Train a tactile-image VAE with a timm MobileNetV4 encoder.
 # Run:
 #   python scripts/train_with_timm.py
 
-# 训练任务：vae | mae（缺省为 vae）
+# Training task
 task: vae
 
 # Dataset
@@ -10,19 +10,15 @@ data_dir: pngs
 eval_ratio: 0.2
 
 # Model
-# Requested HF model id: timm/vit_base_patch16_dinov3.lvd1689m
-# timm registered model name: vit_base_patch16_dinov3.lvd1689m
-# timm pretrained_cfg:
-#   input_size: (3, 256, 256)
-#   num_features: 768
-#   model(x) embedding output with num_classes=0: (B, 768)
-model: vit_base_patch16_dinov3.lvd1689m
-pretrained: true
-pretrained_path: "checkpoint/vit_base_patch16_dinov3_lvd1689m/model.safetensors"
+model: mobilenetv4_conv_aa_large
+pretrained: false
+features_only: false
+pretrained_path: "checkpoint/mobilenetv4_conv_aa_large_e230_r448_in12k_ft_in1k/model.safetensors"
 initial_checkpoint: ""
 resume: ""
 no_resume_opt: false
 in_chans: 3
+#input_size: [3, 256, 256]
 latent_dim: 256
 decoder_hidden_channels: 512
 decoder_hidden_spatial:
@@ -69,7 +65,7 @@ experiment: ""
 # wandb
 log_wandb: true
 wandb_project: xense-tac-encoder
-wandb_name: "vit_base_patch16_dinov3_lvd1689m"
+wandb_name: "mobilenetv4_conv_aa_large"
 wandb_log_images: true
 wandb_image_interval: 1
 wandb_num_images: 8

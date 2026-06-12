@@ -2,6 +2,9 @@
 # Run:
 #   python scripts/train_with_timm.py
 
+# Training task
+task: vae
+
 # Dataset
 data_dir: pngs
 eval_ratio: 0.2

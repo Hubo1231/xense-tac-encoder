@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 顺序运行 scripts/train_with_timm.py，依次喂入 configs/*.yaml。
+# 顺序运行 scripts/train_with_timm.py，依次喂入 configs/vae/*.yaml。
 #
 # 用法：
-#   ./scripts/run_all_timm.sh                       # 跑 configs/*.yaml 全部 6 个
+#   ./scripts/run_all_timm.sh                       # 跑 configs/vae/*.yaml 全部 VAE config
 #   ./scripts/run_all_timm.sh resnet50_a1_in1k      # 只跑指定 config（可省略 .yaml）
 #   ./scripts/run_all_timm.sh resnet50 convnextv2_base_fcmae_ft_in22k_in1k
 #
@@ -16,7 +16,7 @@ set -o pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-CONFIG_DIR="configs"
+CONFIG_DIR="configs/vae"
 LOG_DIR="logs"
 mkdir -p "$LOG_DIR"
 

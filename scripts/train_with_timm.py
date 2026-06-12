@@ -16,7 +16,7 @@ embedding：
     embedding = model(transforms(img).unsqueeze(0))  # (B, C)
 
 运行：
-    python scripts/train_with_timm.py --config configs/vit_base_patch16_dinov3_lvd1689m.yaml
+    python scripts/train_with_timm.py --config configs/vae/vit_base_patch16_dinov3_lvd1689m.yaml
 """
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ except ImportError:
 
 _logger = logging.getLogger("train_with_timm")
 
-DEFAULT_CONFIG = "configs/vit_base_patch16_dinov3_lvd1689m.yaml"
+DEFAULT_CONFIG = "configs/vae/vit_base_patch16_dinov3_lvd1689m.yaml"
 
 
 # Keys required regardless of the training task (`task: vae | mae`).
@@ -612,8 +612,8 @@ def _parse_cli() -> tuple[Path, str | None]:
         type=str,
         default=DEFAULT_CONFIG,
         help=(
-            "Path to a YAML config under configs/. Either an absolute path, a path "
-            "relative to the repo root, or just the filename (e.g. "
+            "Path to a YAML config under configs/{vae,mae,simmim}/. Either an absolute path, "
+            "a path relative to the repo root, or just the filename (e.g. "
             "'resnet50_a1_in1k.yaml')."
         ),
     )
@@ -630,20 +630,32 @@ def _parse_cli() -> tuple[Path, str | None]:
     args = parser.parse_args()
     task_override = args.task
 
-    raw = args.config
-    candidate = Path(raw)
-    if candidate.is_absolute() and candidate.exists():
-        return candidate, task_override
-
     repo_root = Path(__file__).resolve().parents[1]
-    rel = repo_root / raw
-    if rel.exists():
-        return rel, task_override
-    in_configs = repo_root / "configs" / raw
-    if in_configs.exists():
-        return in_configs, task_override
+    raw_paths = [Path(args.config)]
+    if raw_paths[0].suffix == "":
+        raw_paths.append(Path(f"{args.config}.yaml"))
+
+    for raw in raw_paths:
+        if raw.is_absolute() and raw.exists():
+            return raw, task_override
+
+        rel = repo_root / raw
+        if rel.exists():
+            return rel, task_override
+
+        in_configs = repo_root / "configs" / raw
+        if in_configs.exists():
+            return in_configs, task_override
+
+    task_dirs = [task_override] if task_override is not None else list(VALID_TASKS)
+    for raw in raw_paths:
+        for task_dir in task_dirs:
+            in_task_configs = repo_root / "configs" / task_dir / raw
+            if in_task_configs.exists():
+                return in_task_configs, task_override
     raise FileNotFoundError(
-        f"Could not locate config '{raw}'. Tried: {candidate}, {rel}, {in_configs}."
+        f"Could not locate config '{args.config}'. Tried absolute/relative paths, configs/, "
+        "and configs/{vae,mae,simmim}/."
     )
 
 

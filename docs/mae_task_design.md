@@ -3,21 +3,22 @@
 ## 0. 如何执行（TL;DR）
 
 任务由 config 顶层 `task: vae | mae | simmim` 决定（缺省 `vae`，旧 config 不受影响），也可用
-`--task` 在命令行临时覆盖。三种自监督任务 + 两个批量脚本：
+`--task` 在命令行临时覆盖。三种自监督任务 + 三个批量脚本：
 
 ```bash
 # —— SimMIM 掩码预训练（任意 backbone：卷积 / 混合 / ViT 全可）——
 ./scripts/run_all_simmim.sh                       # 跑全部 13 个 backbone 的 SimMIM
 ./scripts/run_all_simmim.sh resnet50_a1_in1k      # 指定某个
-python scripts/train_with_timm.py --config configs/resnet50_a1_in1k.yaml --task simmim
+python scripts/train_with_timm.py --config configs/simmim/resnet50_a1_in1k.yaml
 
-# —— MAE 掩码预训练（仅 ViT：3 个 dinov3 small/base/large）——
-./scripts/run_all_mae.sh                           # 跑全部 *_mae.yaml
-python scripts/train_with_timm.py --config configs/vit_base_patch16_dinov3_lvd1689m_mae.yaml
+# —— MAE 掩码预训练（仅 ViT：dinov3 small/base/large + CLIP ViT-B/16）——
+./scripts/run_all_mae.sh                           # 跑 configs/mae/ 下全部 config（dinov3 ×3 + clip ×1）
+python scripts/train_with_timm.py --config configs/mae/vit_base_patch16_dinov3_lvd1689m_mae.yaml
+python scripts/train_with_timm.py --config configs/mae/vit_base_patch16_clip_224_mae.yaml   # CLIP 编码器
 
 # —— VAE 预训练（原有任务，任意 backbone）——
 ./scripts/run_all_timm.sh
-python scripts/train_with_timm.py --config configs/vit_base_patch16_dinov3_lvd1689m.yaml
+python scripts/train_with_timm.py --config configs/vae/vit_base_patch16_dinov3_lvd1689m.yaml
 ```
 
 三任务对比：
@@ -25,15 +26,14 @@ python scripts/train_with_timm.py --config configs/vit_base_patch16_dinov3_lvd16
 | task | 适用 backbone | 机制 | 批量脚本 |
 |---|---|---|---|
 | `vae` | 任意 | 池化 embedding → 反卷积重建整图 | `run_all_timm.sh` |
-| `mae` | **仅 ViT** | patch token 丢弃 + 轻量 transformer decoder（§4） | `run_all_mae.sh`（跑 `*_mae.yaml`） |
-| `simmim` | **任意** | 像素层掩码 + forward_features 特征图 + 1×1 卷积/PixelShuffle 解码（§13） | `run_all_simmim.sh`（`--task simmim` 覆盖全部基础 config） |
+| `mae` | **仅 ViT**（dinov3 / CLIP / 任意 timm ViT，见 §14） | patch token 丢弃 + 轻量 transformer decoder（§4） | `run_all_mae.sh`（读取 `configs/mae/*.yaml`） |
+| `simmim` | **任意** | 像素层掩码 + forward_features 特征图 + 1×1 卷积/PixelShuffle 解码（§13） | `run_all_simmim.sh`（读取 `configs/simmim/*.yaml`） |
 
 要点：
 - `task: mae` 只支持 ViT，对卷积 backbone 直接报错；`vae` / `simmim` 对任意 backbone 通用。
 - MAE 超参写在 config 的 `mae:` 子块；SimMIM 写在 `simmim:` 子块（`mask_patch_size` / `mask_ratio`），
   缺省值见 `scripts/train_with_timm.py` 的 `MAE_DEFAULTS` / `SIMMIM_DEFAULTS`。
-- `--task {vae,mae,simmim}` 命令行覆盖 config 的 `task`，使一套基础 config 无需复制即可跑不同任务
-  （`run_all_simmim.sh` 正是据此对全部 backbone 跑 SimMIM）。
+- `--task {vae,mae,simmim}` 可临时覆盖 config 的 `task`；批量脚本默认按任务目录读取。
 - 日志/可视化复用现有流程：掩码任务打印 `loss`+`recon`，wandb 重建图为「可见区域贴原图 + 掩码区域用预测」。
 
 ---
@@ -41,7 +41,7 @@ python scripts/train_with_timm.py --config configs/vit_base_patch16_dinov3_lvd16
 ## 1. 背景与现状
 
 当前预训练入口为 `scripts/train_with_timm.py`，批量驱动脚本为 `scripts/run_all_timm.sh`，
-逐个读取 `configs/*.yaml` 跑训练。现有训练任务**只有 VAE**：
+逐个读取 `configs/vae/*.yaml` 跑 VAE 训练。现有训练任务**只有 VAE**：
 
 - `_build_timm_backbone()` 用 `timm.create_model(name, num_classes=0, in_chans=3)` 造 backbone，
   约定 `model(x) -> (B, feature_dim)` 的**扁平图像 embedding**（对任意 backbone 通用：ResNet / ConvNeXt /
@@ -402,14 +402,14 @@ if not is_vit:
 | `src/models/mae.py` | **新增**：`TactileMAE` + `patchify/unpatchify/random_masking` + decoder。 |
 | `src/models/__init__.py` | 导出 `TactileMAE`；（可选）注册 `tactile_mae` 工厂。 |
 | `scripts/train_with_timm.py` | 读取/校验 `task`；新增 `_build_model` 分发；指标日志泛化；exp_name 含 task。 |
-| `configs/*.yaml` | 给现有 config 补 `task: vae`（向后兼容，亦可不写）。 |
-| `configs/vit_base_patch16_dinov3_lvd1689m_mae.yaml` | **新增** MAE 示例 config（见 §9）。 |
+| `configs/vae/*.yaml` | VAE config 放在 `configs/vae/`，显式 `task: vae`。 |
+| `configs/mae/vit_base_patch16_dinov3_lvd1689m_mae.yaml` | **新增** MAE 示例 config（见 §9）。 |
 | `docs/mae_task_design.md` | 本文档。 |
-| `scripts/run_all_timm.sh` | 无需改动（已支持按文件名跑指定 config）。 |
+| `scripts/run_all_timm.sh` | 默认读取 `configs/vae/*.yaml`。 |
 
 ## 9. MAE 示例 config（草案）
 
-`configs/vit_base_patch16_dinov3_lvd1689m_mae.yaml`：
+`configs/mae/vit_base_patch16_dinov3_lvd1689m_mae.yaml`：
 
 ```yaml
 task: mae
@@ -549,15 +549,57 @@ def compute_loss(self, batch):
 ### 13.3 配置与运行机制
 
 - `simmim:` 子块超参：`mask_patch_size`（默认 32）、`mask_ratio`（默认 0.6）；缺省见 `SIMMIM_DEFAULTS`。
-- 新增 `--task {vae,mae,simmim}` 命令行覆盖（在校验前生效），使一套基础 config 无需复制即可切任务。
-- `scripts/run_all_simmim.sh`：对 `configs/` 下全部基础 config（排除 `*_mae.yaml`，共 13 个）加
-  `--task simmim` 顺序跑；`scripts/run_all_mae.sh`：对 `configs/*_mae.yaml`（3 个 ViT）跑 MAE。
+- 新增 `--task {vae,mae,simmim}` 命令行覆盖（在校验前生效）；批量脚本默认使用按任务拆分后的 config 目录。
+- `scripts/run_all_simmim.sh`：对 `configs/simmim/*.yaml`（共 13 个）顺序跑；`scripts/run_all_mae.sh`：对 `configs/mae/*.yaml`（4 个 ViT）跑 MAE。
   两脚本均沿用 `run_all_timm.sh` 的日志 / 失败隔离 / 汇总骨架。
 
 ### 13.4 验证（已通过）
 
 - 模型 smoke：`resnet50 / convnextv2 / fastvit_t12 / mobilenetv4 / vit_small` 均跑通 compute_loss /
   backward / reconstruct / encode，重建输出回到输入分辨率（卷积 stride32、ViT stride16）。
-- 集成：`--task simmim` 覆盖 vae config → `TactileSimMIM`；`train_one_epoch`+`validate` 在合成数据上
+- 集成：`configs/simmim/*.yaml` → `TactileSimMIM`；`train_one_epoch`+`validate` 在合成数据上
   loss 正常、summary 含 `loss/recon`；三任务 dispatch（vae/mae/simmim）与 conv+mae 报错路径均正确。
-- 脚本：`run_all_mae.sh` 默认选中 3 个 `*_mae.yaml`，`run_all_simmim.sh` 默认选中 13 个基础 config。
+- 脚本：`run_all_mae.sh` 默认选中 `configs/mae/*.yaml`（dinov3 ×3 + CLIP ×1 = 4 个），`run_all_simmim.sh`
+  默认选中 13 个基础 config。
+
+## 14. CLIP 编码器跑 MAE（零代码，验证 TactileMAE 的模型解耦）
+
+`TactileMAE` 与**具体模型解耦**，只依赖一组 timm ViT 的标准接口（`patch_embed` / `_pos_embed` /
+`blocks` / `norm` / `num_prefix_tokens` / 可选 rope）。因此**任何 timm ViT 都能直接当 encoder**，包括
+timm 自带的 **CLIP 预训练 ViT**——无需改任何 `.py`，只加一个 config。
+
+### 14.1 与之前 ViT 的对照
+
+| backbone | input | patch | patch tokens | 前缀 | rope |
+|---|---|---|---|---|---|
+| dinov3 small/base/large | 256 | 16 | 256 | 5（cls+4 reg） | ✅（Eva） |
+| **CLIP ViT-B/16** | 224 | 16 | 196 | 1（仅 cls） | ❌ |
+
+CLIP 走的是「标准 ViT」分支（`_pos_embed` 返回张量、`blk(x)`、无 rope），是 §4.5 里已验证的最简单路径。
+CLIP 的归一化 mean/std 由 timm `pretrained_cfg` 自动解析，预处理无需特殊处理。
+
+### 14.2 配置：`configs/mae/vit_base_patch16_clip_224_mae.yaml`
+
+关键字段（其余沿用 dinov3 `_mae.yaml`）：
+
+```yaml
+task: mae
+model: vit_base_patch16_clip_224.openai   # OpenAI 原版 CLIP B/16；可换 .laion2b / quickgelu 变体
+pretrained: true
+pretrained_path: ""                        # 空 = 首次从 HF Hub 下载（~600MB）；离线则指向本地 safetensors
+mae: { mask_ratio: 0.75, decoder_embed_dim: 512, decoder_depth: 4, decoder_num_heads: 16, norm_pix_loss: true }
+```
+
+注意：
+- **首次运行需联网**下载 CLIP 权重；离线时把权重下到本地、`pretrained_path` 指向 safetensors（与 dinov3 一样）。
+- 激活函数小细节：`.openai` 权重原配 QuickGELU，而 `vit_base_patch16_clip_224` 用标准 GELU；继续训练（MAE）
+  下影响可忽略，若要严格匹配可换 `.laion2b`（标准 GELU）或 quickgelu 变体。
+
+### 14.3 验证（已通过）
+
+- `vit_base_patch16_clip_224.openai` tag 有效；config 通过校验；dispatch → `TactileMAE`（196 token / prefix 1）；
+  `compute_loss` + `backward` 正常。
+- `run_all_mae.sh` 自动纳入该 config（共 4 个 ViT MAE），且 `run_all_simmim.sh` 不会扫描 `configs/mae/`。
+
+> 想要其他 CLIP 编码器（如 `vit_large_patch14_clip_224`，patch14 → 256 token）只需再加一个同结构 config，
+> 同样零代码。

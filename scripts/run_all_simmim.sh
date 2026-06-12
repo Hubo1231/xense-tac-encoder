@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 顺序运行 scripts/train_with_timm.py，对每个 config 强制以 SimMIM 掩码预训练（--task simmim）。
-# SimMIM 对任意 backbone 通用（卷积 / 混合 / ViT 都行），因此默认跑「除 *_mae.yaml 之外」的全部 config。
+# 顺序运行 scripts/train_with_timm.py，跑 configs/simmim 下的 SimMIM 掩码预训练 config。
+# SimMIM 对任意 backbone 通用（卷积 / 混合 / ViT 都行）。
 #
 # 用法：
-#   ./scripts/run_all_simmim.sh                       # 跑全部 backbone 的 SimMIM
+#   ./scripts/run_all_simmim.sh                       # 跑全部 configs/simmim/*.yaml
 #   ./scripts/run_all_simmim.sh resnet50_a1_in1k      # 只跑指定 config（可省略 .yaml）
 #   ./scripts/run_all_simmim.sh resnet50 fastvit_t12_apple_dist_in1k
 #
@@ -15,7 +15,7 @@ set -o pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-CONFIG_DIR="configs"
+CONFIG_DIR="configs/simmim"
 LOG_DIR="logs"
 TASK="simmim"
 mkdir -p "$LOG_DIR"
@@ -23,12 +23,10 @@ mkdir -p "$LOG_DIR"
 if [[ $# -gt 0 ]]; then
     REQUESTED=("$@")
 else
-    # 默认：configs 下全部 *.yaml，但排除 *_mae.yaml（那是 MAE 专用、与基础 config 同模型）。
+    # 默认：configs/simmim 下全部 yaml。
     REQUESTED=()
     while IFS= read -r -d '' f; do
-        base="$(basename "$f")"
-        [[ "$base" == *_mae.yaml ]] && continue
-        REQUESTED+=("$base")
+        REQUESTED+=("$(basename "$f")")
     done < <(find "$CONFIG_DIR" -maxdepth 1 -name '*.yaml' -print0 | sort -z)
 fi
 
@@ -68,7 +66,7 @@ for cfg in "${CONFIGS[@]}"; do
     echo "=============================================================="
 
     start=$SECONDS
-    if python scripts/train_with_timm.py --config "$cfg" --task "$TASK" 2>&1 | tee "$log_path"; then
+    if python scripts/train_with_timm.py --config "$cfg" 2>&1 | tee "$log_path"; then
         elapsed=$((SECONDS - start))
         printf '[ %s ] OK     %s  (%dm%ds)\n' "$(date '+%F %T')" "$cfg" $((elapsed/60)) $((elapsed%60))
         OK+=("$cfg")
