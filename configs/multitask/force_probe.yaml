@@ -1,0 +1,60 @@
+# z → force_grid (35×20×3) probe 评测配置（docs/force_probe_eval_design.md）。
+#
+# 本文件只描述 force 数据与 probe 协议；backbone/模型结构由 --config 指向的
+# backbone 训练配置（如 fastvit_t12_physical_collection2.yaml）决定。
+#
+# 用法：
+#   .venv/bin/python scripts/evaluate_force_probe.py \
+#     --config configs/multitask/fastvit_t12_physical_collection2.yaml \
+#     --checkpoint outputs/<run>/model_best.pt \
+#     --force-config configs/multitask/force_probe.yaml
+
+# 数据：唯一完整回填 force_grid 的 h5（5994 样本，其中 5863 个含 force_grid；
+# 131 个采集失败样本没有该字段，评测时跳过）。
+h5_path: data/xensim/outputs/collection2_force/tactile_20260825_143603.h5
+# encoder 训练时实际使用的 h5_dir（4 个 h5 按文件名排序拼接成全局样本序号），
+# 用于原样复现训练时的 train/eval 划分（split_row_indices, eval_ratio=0.2, seed=42），
+# 再取本文件对应的片段与有效样本求交。
+train_h5_dir: data/xensim/outputs/collection2
+image_key: rgb
+eval_ratio: 0.2
+seed: 42
+
+# 目标列：force_grid 保留 (35,20,3) 空间形状；三个目标一律不做 z-score，
+# 直接在物理单位（N）上拟合与评测（force_grid 不在 stats.json 中，也不该在）。
+heads:
+  force_grid:
+    type: regression
+    dim: 3
+    spatial: true
+    shape: [35, 20, 3]
+    train: false
+    normalize: false
+  force_xyz:
+    type: regression
+    dim: 3
+    train: false
+    normalize: false
+  contact_mask:
+    type: regression
+    dim: 1
+    spatial: true
+    shape: [35, 20]
+    train: false
+    normalize: false
+
+# probe 划分与超参（设计文档 §2/§3/§4）：
+# probe 只在 train split 上拟合；train split 再切 10% 作 probe-val 用于
+# 超参选择与早停；eval split 只用于最终一次性报告。
+probe_val_ratio: 0.1
+eps: 0.001                    # 非零/接触判定阈值（N）
+eps_sensitivity: [0.01, 0.1]  # masked 指标的 ε 敏感性
+ridge_lambdas: [1e-4, 1e-3, 1e-2, 1e-1, 1, 10, 100]
+mlp:
+  hidden_dim: 1024
+  dropout: 0.1
+  weight_decay: 1e-4
+  batch_size: 256
+  max_epochs: 100
+  patience: 10                # probe-val masked MAE 早停耐心
+  lrs: [1e-2, 1e-3, 1e-4]

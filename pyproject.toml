@@ -1,0 +1,51 @@
+# uv / pip 项目配置（feat/multitask-pretrain 分支新增）。
+#
+# 作用：用 uv 统一管理环境与运行，替代手工维护 requirements.txt 的方式：
+#   uv sync                                     # 按本文件创建/更新 .venv 并安装依赖
+#   uv run python scripts/train_multitask.py    # 在 uv 环境内运行训练
+#
+# 依赖版本对齐 requirements.txt（conda env: eval-encoder, Python 3.12.13），
+# 并新增 pyarrow（multitask 体系的 metadata.parquet 读写）。
+# requirements.txt 保持不变，两条依赖路径互不干扰。
+
+[project]
+name = "xense-tac-encoder"
+version = "0.1.0"
+description = "Tactile image encoder pretraining: VAE / MAE / SimMIM / multi-head supervised tasks on timm backbones."
+requires-python = ">=3.12"
+dependencies = [
+    "torch==2.10.0",
+    "torchvision==0.25.0",
+    "numpy==2.2.6",
+    "pillow==12.1.1",
+    "PyYAML==6.0.3",
+    "tqdm==4.67.3",
+    "tyro==1.0.13",
+    "safetensors==0.7.0",
+    "wandb==0.24.2",
+    "timm",
+    # LeRobot 数据采集路径
+    "lerobot==0.5.1",
+    "torchcodec==0.10.0",
+    "av==15.1.0",
+    # multitask 体系：metadata.parquet 读写（src/datasets/labeled_dataset.py 等）
+    "pyarrow>=18.0.0",
+    # HDF5 采集数据读取（src/datasets/h5_dataset.py，data/xensim/outputs/collection/*.h5）
+    "h5py>=3.10.0",
+]
+
+[project.optional-dependencies]
+# w_ssim > 0 / w_mix > 0 时启用 SSIM 类损失（src/training/losses.py）
+ssim = ["pytorch-msssim"]
+# 采集端标注（scripts/build_labeled_dataset.py 的 compute_frame_signals）：
+# xensesdk 为私有包，不在公共索引，请手动安装，例如：
+#   uv pip install xensesdk    # 或从内部索引 / 本地 wheel 安装
+annotate = []
+
+# timm 固定在 requirements.txt 同款提交上（DINOv3 / RoPE 支持依赖该版本）。
+[tool.uv.sources]
+timm = { git = "https://github.com/rwightman/pytorch-image-models.git", rev = "6a928a1a29cb3f492cf1f8f475f3579e7ef45fa1" }
+
+# src/ 与 scripts/ 以脚本方式运行（sys.path 内自处理），不作为可安装包打包。
+[tool.uv]
+package = false

@@ -1,0 +1,91 @@
+# FastViT-T12 + Tiny FPN 的物理感知预训练（todo.md 定义）。
+#
+# 训练数据直接读取 data/xensim/outputs/collection2 下的 HDF5，使用
+# rgb 作为输入、depth/flow 作为回归目标；训练前会在 train split 上
+# 计算缺失目标的 mean/std 并写入 stats.json，再对目标做 z-score 归一化。
+#
+# 运行：
+#   uv run python scripts/train_multitask.py \
+#     --config configs/multitask/fastvit_t12_physical_collection2.yaml
+
+task: multitask
+
+# Dataset
+dataset_type: h5
+data_dir: data/xensim/outputs/collection2
+h5_dir: data/xensim/outputs/collection2
+stats_path: data/xensim/outputs/collection2/stats.json
+normalize_targets: true
+image_key: rgb
+eval_ratio: 0.2
+
+# Model
+model_arch: physical
+model: fastvit_t12.apple_dist_in1k
+pretrained: true
+pretrained_path: "checkpoint/fastvit_t12_apple_dist_in1k/params.safetensors"
+initial_checkpoint: ""
+resume: ""
+no_resume_opt: false
+in_chans: 3
+model_kwargs: {}
+
+# Heads：数据集按这两个 HDF5 字段读取目标。spatial: true 表示保留原始
+# 空间形状，不展平成向量；model_arch=physical 时训练脚本会忽略普通线性
+# head，改用 Tiny FPN 的 dense/bottleneck 双分支。
+heads:
+  depth:
+    type: regression
+    dim: 1
+    weight: 1.0
+    loss: mse
+    spatial: true
+    shape: [175, 100]
+  flow:
+    type: regression
+    dim: 2
+    weight: 1.0
+    loss: mse
+    spatial: true
+    shape: [175, 100, 2]
+
+# todo.md 中的多监督权重
+loss_weights:
+  dense_depth: 1.0
+  dense_flow: 1.0
+  bottleneck_depth: 0.25
+  bottleneck_flow: 0.25
+
+# Device
+device: auto
+
+# Optimizer
+opt: adamw
+lr: 0.0001
+weight_decay: 0.01
+clip_grad:
+
+# Scheduler
+sched: cosine
+epochs: 100
+warmup_epochs: 1
+warmup_lr: 0.000001
+min_lr: 0.000001
+cooldown_epochs: 0
+
+# Preprocessing is resolved from timm pretrained_cfg in scripts/train_multitask.py.
+
+# Loader and logging
+batch_size: 16
+workers: 4
+seed: 42
+log_interval: 20
+log_batches: false
+val_interval: 1
+output: outputs
+experiment: ""
+
+# wandb
+log_wandb: false
+wandb_project: xense-tac-encoder
+wandb_name: "fastvit_t12_physical_collection2"
