@@ -150,8 +150,11 @@ eval split  (20%)  →  只用于最终一次性报告指标，不参与任何�
 - ε = 1e-3 N（masked/接触检测主阈值，敏感性见各结果 json 的 ε ∈ {1e-2, 1e-1} 项）。
 - 所选超参：FastViT linear λ=0.1、MLP lr=1e-3（91 epoch 早停）；
   DINOv3 linear λ=0.01、MLP lr=1e-3（99 epoch）。
-- **注意**：DINOv3 该次运行 `pretrained: false`（随机初始化 ViT-B/16），
-  并非预训练表征，与 FastViT（apple_dist_in1k 预训练）的对比不公平，仅供参考。
+- **注意**：两个 multitask 运行实际都是随机初始化起步：DINOv3 配置本身
+  `pretrained: false`；FastViT 配置的 `pretrained_path` 指向的 `params.safetensors`
+  是 Flax 命名格式，timm 无法识别（加载时全部报 unexpected keys，权重未生效，
+  2026-09-01 核实并修复，见 §5.1）。因此表中两行本质是"两种架构随机初始化 +
+  multitask 训练"的对比。
 
 非零指标列为 ε=1e-3 的 masked MAE/RMSE/R²；合力相对误差为 mean（median 见 json）。
 
@@ -177,15 +180,22 @@ eval split  (20%)  →  只用于最终一次性报告指标，不参与任何�
 
 ### 5.1 权重来源对比（训练后 vs 初始预训练）
 
-4 组权重 × (linear + MLP)，协议/split/指标/数据与上表完全相同，只改变 encoder
+5 组权重 × (linear + MLP)，协议/split/指标/数据与上表完全相同，只改变 encoder
 权重来源（`--checkpoint none` 走 `_build_timm_backbone` 的 pretrained 加载路径，
 multitask 头/pooler 保持随机初始化，seed=42 固定）。
 
 权重来源：
 
 - **FastViT 训练后**：`outputs/20260827-111139-fastvit_t12_apple_dist_in1k-multitask256/model_best.pt`；
-- **FastViT 初始**：本地 `checkpoint/fastvit_t12_apple_dist_in1k/params.safetensors`
-  （timm `pretrained_cfg_overlay file` 方式，与训练配置一致）；
+- **FastViT 初始**：本地 `checkpoint/fastvit_t12_apple_dist_in1k/params_timm.safetensors`——
+  原始 `params.safetensors` 为 Flax 命名格式（`/` 分隔、HWIO kernel、BN 的
+  `scale/mean/var`），timm 无法直接加载，经
+  `scripts/convert_fastvit_flax_safetensors.py` 转换为 timm 格式
+  （转换结果与 timm 官方 HF 权重前向逐位一致，max diff=0）；
+- **FastViT SimMIM**：`checkpoint/trained_params.safetensors`（SimMIM 掩码重建
+  预训练得到的 encoder 权重），同为 Flax 格式，经同一脚本转换为
+  `checkpoint/fastvit_t12_simmim_timm.safetensors`；评测配置
+  `configs/multitask/fastvit_t12_simmim_collection2.yaml`；
 - **DINOv3 训练后**：`outputs/20260828-005331-vit_base_patch16_dinov3_lvd1689m-multitask256/model_best.pt`
   （该运行本身是随机初始化起步的）；
 - **DINOv3 初始**：timm `vit_base_patch16_dinov3.lvd1689m` 官方预训练权重，
@@ -194,40 +204,51 @@ multitask 头/pooler 保持随机初始化，seed=42 固定）。
   huggingface.co 返回 403、hf-mirror.com 返回 401，均不可用；timm 仓库非门控，
   权重同为 DINOv3 LVD1689M 官方发布版本）。
 
-**注意**：初始权重组的 z 经过一层随机投影（physical 架构的 PhysicalPooler /
+**注意 1**：初始权重组的 z 经过一层随机投影（physical 架构的 PhysicalPooler /
 AttentionPool 是随机初始化的）。这不影响 probe 合法性（probe 只在 train split
 拟合），但意味着初始组的数字是"预训练 backbone + 随机投影"的下界，而非纯
 预训练表征的直接读出。
+
+**注意 2**：本节 2026-08-29 版本的"FastViT 初始"两行因上述 Flax 格式问题
+加载失败，实际是在随机初始化 backbone 上跑出的（masked R²=0.107 / -0.208），
+已由 2026-09-01 重跑的本表结果取代。
 
 | 权重 | head | 全体 MAE/RMSE/R² | 非零 masked MAE/RMSE/R² | 接触 P/R/F1 | 合力相对误差 |
 |---|---|---|---|---|---|
 | FastViT 训练后 | linear (λ=0.1) | 0.00088 / 0.00255 / 0.647 | 0.00757 / 0.01306 / 0.784 | 0.038 / 0.989 / 0.072 | 0.244 |
 | FastViT 训练后 | MLP (lr=1e-3) | 0.00144 / 0.00312 / 0.468 | 0.00951 / 0.01627 / 0.665 | 0.023 / 0.992 / 0.045 | 1.277 |
-| FastViT 初始 | linear (λ=1e-4) | 0.00070 / 0.00386 / 0.189 | 0.01518 / 0.02657 / 0.107 | 0.060 / 0.853 / 0.112 | 1.530 |
-| FastViT 初始 | MLP (lr=1e-3) | 0.00084 / 0.00430 / -0.008 | 0.01755 / 0.03089 / -0.208 | 0.021 / 0.609 / 0.040 | 5.182 |
+| FastViT 初始 | linear (λ=1e-4) | 0.00129 / 0.00426 / 0.009 | 0.01284 / 0.02248 / 0.360 | 0.034 / 0.968 / 0.066 | 1.520 |
+| FastViT 初始 | MLP (lr=1e-3) | 0.00124 / 0.00412 / 0.075 | 0.01556 / 0.02710 / 0.070 | 0.023 / 0.886 / 0.045 | 1.533 |
+| FastViT SimMIM | linear (λ=1e-4) | 0.00079 / 0.00364 / 0.280 | 0.01367 / 0.02394 / 0.274 | 0.050 / 0.936 / 0.094 | 0.810 |
+| FastViT SimMIM | MLP (lr=1e-3) | 0.00125 / 0.00439 / -0.051 | 0.01762 / 0.03067 / -0.191 | 0.019 / 0.869 / 0.037 | 4.873 |
 | DINOv3 训练后 | linear (λ=0.01) | 0.00081 / 0.00231 / 0.710 | 0.00700 / 0.01172 / 0.826 | 0.042 / 0.993 / 0.080 | 0.242 |
 | DINOv3 训练后 | MLP (lr=1e-3) | 0.00111 / 0.00257 / 0.641 | 0.00804 / 0.01346 / 0.771 | 0.028 / 0.995 / 0.055 | 1.064 |
 | DINOv3 初始 | linear (λ=1e-4) | 0.00153 / 0.00399 / 0.131 | 0.01172 / 0.02078 / 0.453 | 0.025 / 0.989 / 0.048 | 1.818 |
 | DINOv3 初始 | MLP (lr=1e-3) | 0.00193 / 0.00424 / 0.019 | 0.01464 / 0.02530 / 0.190 | 0.020 / 0.992 / 0.039 | 2.249 |
 | 常数基线 | — | 0.00070 / 0.00429 / -0.002 | 0.01755 / 0.03089 / -0.208 | 0.022 / 0.555 / 0.042 | 5.145 |
 
-结果 json：`outputs/force_probe_eval/fastvit_t12_apple_dist_in1k_init/` 与
-`outputs/force_probe_eval/vit_base_patch16_dinov3_lvd1689m_init/`（初始组），
+结果 json：`outputs/force_probe_eval/fastvit_t12_apple_dist_in1k_init/`、
+`outputs/force_probe_eval/fastvit_t12_simmim/` 与
+`outputs/force_probe_eval/vit_base_patch16_dinov3_lvd1689m_init/`（初始/SimMIM 组），
 训练后组见各运行目录的 `force_probe_eval/`。
 
 解读：
 
 - **multitask 训练对两个 backbone 都带来巨大提升**（linear masked R²：
-  FastViT 0.107→0.784，DINOv3 0.453→0.826），没有任何一组训练后变差——
+  FastViT 0.360→0.784，DINOv3 0.453→0.826），没有任何一组训练后变差——
   depth/flow 空间监督确实把"力的空间分布"信息写进了 z；
-- **初始权重的可读性差异明显**：DINOv3 预训练（0.453）远高于 FastViT 预训练
-  （0.107），自监督 ViT 特征即使隔一层随机投影也保留了更多线性可读的
-  空间结构信息；FastViT 初始的 MLP 甚至完全塌缩到常数预测
-  （masked R²=-0.208，与基线一致）；
+- **初始权重的可读性差异**：DINOv3 预训练（0.453）> FastViT ImageNet 蒸馏
+  （0.360）> FastViT SimMIM（0.274），均显著优于常数基线（-0.208）。
+  SimMIM 的域内掩码重建预训练能写入部分线性可读的力分布信息，但略逊于
+  ImageNet 蒸馏初始化，更远低于 DINOv3 自监督特征——掩码重建学到的是
+  局部纹理/结构先验，对"力的空间分布"这类物理量的可读性提升有限；
 - 训练后两条 backbone 收敛到相近水平（0.784 vs 0.826），初始差距被
-  multitask 训练抹平；DINOv3 略优，但它本就是随机初始化起步，
+  multitask 训练抹平；且两个 multitask 运行均为随机初始化起步，
   说明该任务上 backbone 架构/容量差异小于监督信号的贡献；
-- 初始组接触检测 Recall 依然很高（0.85~0.99）但 Precision 极低，与训练后
+- **MLP 头一致差于 linear 头**（~4700 样本 × 2100 输出维下过拟合）；
+  SimMIM 组的 MLP 甚至塌缩到接近常数预测（masked R²=-0.191，与基线一致），
+  说明其特征中力信息的线性可读性本就有限，而非头容量问题；
+- 初始组接触检测 Recall 依然很高（0.89~0.99）但 Precision 极低，与训练后
   组一样受力值量级（绝大多数节点 < 0.1 N）主导，F1 的组间差异不宜过度解读。
 
 ## 6. 实现落点（确认方案后再动手）

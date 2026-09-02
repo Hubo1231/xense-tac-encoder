@@ -1,12 +1,14 @@
-# FastViT-T12 + Tiny FPN 的物理感知预训练（todo.md 定义）。
-#
-# 训练数据直接读取 data/xensim/outputs/collection2 下的 HDF5，使用
-# rgb 作为输入、depth/flow 作为回归目标；训练前会在 train split 上
-# 计算缺失目标的 mean/std 并写入 stats.json，再对目标做 z-score 归一化。
+# FastViT-T12 + SimMIM 预训练权重的 probe 评测配置。
+# 结构/划分/预处理与 fastvit_t12_physical_collection2.yaml 完全一致，
+# 仅 pretrained_path 换成 SimMIM 训练得到的 encoder 权重
+# （backbone-only 评测：--checkpoint none，multitask pooler/头保持随机初始化）。
 #
 # 运行：
-#   uv run python scripts/train_multitask.py \
-#     --config configs/multitask/fastvit_t12_physical_collection2.yaml
+#   .venv/bin/python scripts/evaluate_force_probe.py \
+#     --config configs/multitask/fastvit_t12_simmim_collection2.yaml \
+#     --checkpoint none \
+#     --force-config configs/multitask/force_probe.yaml \
+#     --output-dir outputs/force_probe_eval/fastvit_t12_simmim
 
 task: multitask
 
@@ -23,19 +25,18 @@ eval_ratio: 0.2
 model_arch: physical
 model: fastvit_t12.apple_dist_in1k
 pretrained: true
-# 注意：params.safetensors 为 Flax 命名格式，timm 无法直接加载（全部 unexpected keys，
-# 权重不生效）；params_timm.safetensors 是 scripts/convert_fastvit_flax_safetensors.py
-# 转换后的 timm 格式，前向与 timm 官方权重逐位一致。
-pretrained_path: "checkpoint/fastvit_t12_apple_dist_in1k/params_timm.safetensors"
+# SimMIM 训练的 encoder 权重；原始文件 checkpoint/trained_params.safetensors 为
+# Flax 命名格式，timm 无法直接加载，已用 scripts/convert_fastvit_flax_safetensors.py
+# 转换为 timm state_dict 格式。
+pretrained_path: "checkpoint/fastvit_t12_simmim_timm.safetensors"
 initial_checkpoint: ""
 resume: ""
 no_resume_opt: false
 in_chans: 3
 model_kwargs: {}
 
-# Heads：数据集按这两个 HDF5 字段读取目标。spatial: true 表示保留原始
-# 空间形状，不展平成向量；model_arch=physical 时训练脚本会忽略普通线性
-# head，改用 Tiny FPN 的 dense/bottleneck 双分支。
+# Heads：本配置只用于 probe 评测（--checkpoint none），heads/loss_weights 仅为
+# 满足模型构建与配置校验，不参与任何训练。
 heads:
   depth:
     type: regression
@@ -52,7 +53,6 @@ heads:
     spatial: true
     shape: [175, 100, 2]
 
-# todo.md 中的多监督权重
 loss_weights:
   dense_depth: 1.0
   dense_flow: 1.0
@@ -91,4 +91,4 @@ experiment: ""
 # wandb
 log_wandb: false
 wandb_project: xense-tac-encoder
-wandb_name: "fastvit_t12_physical_collection2"
+wandb_name: "fastvit_t12_simmim_collection2"
