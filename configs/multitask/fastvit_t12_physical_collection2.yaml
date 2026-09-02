@@ -5,7 +5,7 @@
 # 计算缺失目标的 mean/std 并写入 stats.json，再对目标做 z-score 归一化。
 #
 # 运行：
-#   uv run python scripts/train_multitask.py \
+#   python scripts/train_multitask.py \
 #     --config configs/multitask/fastvit_t12_physical_collection2.yaml
 
 task: multitask

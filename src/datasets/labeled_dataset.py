@@ -51,9 +51,9 @@ def _import_pyarrow() -> Any:
         import pyarrow
     except ImportError as exc:  # pragma: no cover - 取决于当前环境
         raise ImportError(
-            "缺少 pyarrow（读写 metadata.parquet 需要）。请用 uv 安装：\n"
-            "  uv pip install pyarrow\n"
-            "或运行 scripts/install.sh 一键配置环境。"
+            "缺少 pyarrow（读写 metadata.parquet 需要）。请安装：\n"
+            "  pip install pyarrow\n"
+            "或运行 pip install -r requirements.txt 安装全部依赖。"
         ) from exc
     return pyarrow
 

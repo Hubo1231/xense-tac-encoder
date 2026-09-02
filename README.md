@@ -45,7 +45,22 @@
 pip install -r requirements.txt
 ```
 
-`requirements.txt` 中包含训练和 benchmark 所需的核心依赖：`torch`、`torchvision`、`timm`、`safetensors`、`wandb`、`tyro` 等。
+`requirements.txt` 中包含训练和 benchmark 所需的核心依赖：`torch`、`torchvision`、`timm`、`safetensors`、`wandb`、`tyro` 等，以及 multitask 体系需要的 `pyarrow`（metadata.parquet 读写）和 `h5py`（HDF5 采集数据读取）。
+
+国内网络可使用镜像安装：
+
+```bash
+pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+```
+
+仅需 CPU 版 PyTorch 时，可先装 CPU wheel 再装其余依赖：
+
+```bash
+pip install torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt
+```
+
+`xensesdk` 为私有可选包（仅采集端标注路径需要），不在公共索引，请从内部索引或本地 wheel 手动安装。
 
 如果配置里启用了 `w_mix > 0`、`use_ms_ssim: true` 或 `w_ssim > 0`，还需要安装：
 

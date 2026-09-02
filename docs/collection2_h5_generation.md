@@ -16,13 +16,13 @@ xensim 与训练环境依赖冲突（`numpy<=1.26.4` vs 训练环境的 2.2.6）
 
 ```bash
 cd data/xensim
-uv venv --python 3.10 .venv-collect          # readme 要求 Python 3.9/3.10
+python3.10 -m venv .venv-collect          # readme 要求 Python 3.9/3.10
 source .venv-collect/bin/activate
-uv pip install "xensesdk[viz]"               # 提供 ezgl OpenGL 渲染 / Matrix4x4
-uv pip install -e .                          # 安装 xensim 本体
-uv pip install h5py opencv-python scipy      # 采集脚本依赖
+pip install "xensesdk[viz]"               # 提供 ezgl OpenGL 渲染 / Matrix4x4
+pip install -e .                          # 安装 xensim 本体
+pip install h5py opencv-python scipy      # 采集脚本依赖
 # 可选：FEM 求解加速（无则自动退回 scipy CPU 求解，慢数倍）
-# uv pip install cupy-cuda12x
+# pip install cupy-cuda12x
 ```
 
 运行依赖检查：

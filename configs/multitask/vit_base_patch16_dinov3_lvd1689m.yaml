@@ -6,7 +6,7 @@
 # z 分支监督 16×16。
 #
 # 运行：
-#   uv run python scripts/train_multitask.py \
+#   python scripts/train_multitask.py \
 #     --config configs/multitask/vit_base_patch16_dinov3_lvd1689m.yaml
 
 task: multitask

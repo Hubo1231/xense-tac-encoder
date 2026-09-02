@@ -20,6 +20,11 @@ lerobot==0.5.1
 torchcodec==0.10.0
 av==15.1.0
 
+# multitask 体系：metadata.parquet 读写（src/datasets/labeled_dataset.py 等）
+pyarrow>=18.0.0
+# HDF5 采集数据读取（src/datasets/h5_dataset.py，data/xensim/outputs/collection/*.h5）
+h5py>=3.10.0
+
 # Optional code paths:
 # - Enable SSIM loss with w_ssim > 0:
 #   pytorch-msssim
