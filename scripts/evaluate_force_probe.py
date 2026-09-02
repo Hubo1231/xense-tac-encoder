@@ -14,13 +14,13 @@ force_grid / force_xyz / contact_mask → 拟合 linear(ridge) 与 MLP 两个 pr
     用于选超参（ridge λ / MLP lr）与早停；eval split 只用于最终报告。
 
 用法：
-    .venv/bin/python scripts/evaluate_force_probe.py \
+    python scripts/evaluate_force_probe.py \
         --config configs/multitask/fastvit_t12_physical_collection2.yaml \
         --checkpoint outputs/<run>/model_best.pt \
         --force-config configs/multitask/force_probe.yaml
 
     # 初始权重对照组（不加载 multitask checkpoint，pooler/头随机初始化）：
-    .venv/bin/python scripts/evaluate_force_probe.py \
+    python scripts/evaluate_force_probe.py \
         --config configs/multitask/vit_base_patch16_dinov3_lvd1689m.yaml \
         --checkpoint none --pretrained
 """

@@ -11,8 +11,7 @@
    或直接消费 xensim 采集的 HDF5 文件（:mod:`src.datasets.h5_dataset`
    的 H5TactileDataset）。
 
-与 ``scripts/`` 的关系：CLI 入口放在 ``scripts/``（如
-``scripts/build_labeled_dataset.py``），可复用的逻辑放在本包。
+与 ``scripts/`` 的关系：CLI 入口放在 ``scripts/``，可复用的逻辑放在本包。
 """
 
 from . import crawl, h5_dataset, labeled_dataset, process

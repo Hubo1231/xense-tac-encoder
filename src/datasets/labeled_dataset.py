@@ -1,6 +1,6 @@
 """PNG + Parquet 带标注触觉数据集（multitask 预训练用）。
 
-数据格式约定（由 scripts/build_labeled_dataset.py 产出）：
+数据格式约定：
 
     image_root/                       # 对应配置的 data_dir
         images/*.png                  # 触觉图像帧（懒加载）

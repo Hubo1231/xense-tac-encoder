@@ -21,7 +21,7 @@ timm 的 checkpoint_filter_fn 只处理 Apple 官方 torch 格式（network.N.*�
     `layer_scale.gamma` (C,) -> (C, 1, 1)
 
 用法：
-    .venv/bin/python scripts/convert_fastvit_flax_safetensors.py \
+    python scripts/convert_fastvit_flax_safetensors.py \
         checkpoint/trained_params.safetensors checkpoint/fastvit_t12_simmim_timm.safetensors
 
 可选 --verify-against-timm 用官方 apple_dist_in1k 权重做前向数值校验

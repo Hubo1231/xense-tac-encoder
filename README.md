@@ -8,24 +8,37 @@
 2. 用 `TactileVAE` 将 embedding 投影到 latent，再反卷积重建触觉 RGB 图像。
 3. 通过重建 loss、latency benchmark 和 latent variance 做横向比较。
 
+此外有一条独立的多头监督（multitask）预训练路径：在 timm encoder 的
+embedding 上挂多个回归/分类头，直接监督 depth/flow/force 等物理量，
+见下文"Multitask 多头监督预训练"一节。
+
 ## 项目结构
 
 ```text
 .
-├── configs/                         # timm backbone 训练配置
+├── configs/                         # 训练配置，按任务分目录（vae / simmim / mae / multitask）
 ├── checkpoint/                      # 本地预训练权重目录，不建议提交大文件
 ├── data/                            # 触觉 RGB 图像数据目录
-├── outputs/                         # scripts/train_with_timm.py 输出目录
+├── docs/                            # 设计文档（MAE 任务、collection2 数据生成、force probe 评测）
+├── outputs/                         # scripts/train_with_timm.py / train_multitask.py 输出目录
 ├── runs/                            # scripts/train.py / evaluate.py 默认输出
 ├── scripts/
-│   ├── train_with_timm.py            # 当前主要训练入口：timm encoder + TactileVAE
+│   ├── train_with_timm.py            # VAE / SimMIM / MAE 训练入口：timm encoder
+│   ├── train_multitask.py            # multitask 训练入口：timm encoder + 多头监督
 │   ├── train.py                      # typed config 训练入口，当前主要服务本地 MobileNetV4 路径
 │   ├── evaluate.py                   # 旧式/兼容评估入口
-│   ├── run_all_timm.sh               # 顺序跑 configs/*.yaml
-│   └── benchmark_all_configs.sh      # 顺序 benchmark configs/*.yaml
+│   ├── evaluate_multitask.py         # multitask 训练后评测 + linear probe
+│   ├── evaluate_force_probe.py       # z → force_grid (35×20×3) probe 评测
+│   ├── convert_fastvit_flax_safetensors.py  # Flax 格式 FastViT 权重 → timm 格式
+│   ├── run_all_timm.sh               # 顺序跑 configs/vae/*.yaml
+│   ├── run_all_simmim.sh             # 顺序跑 configs/simmim/*.yaml
+│   ├── run_all_mae.sh                # 顺序跑 configs/mae/*.yaml
+│   └── benchmark_all_configs.sh      # 顺序 benchmark configs/vae/*.yaml
 └── src/
+    ├── datasets/                     # 数据爬取/处理/读取（H5TactileDataset、LabeledTactileDataset）
     ├── models/
     │   ├── vae.py                    # TactileVAE / TactileAutoencoder
+    │   ├── multitask.py              # TactileMultiTask / TactilePhysicalMultiTask 等
     │   ├── backbones.py              # 本地 backbone registry
     │   ├── fastvit_t12_apple_dist_in1k.py
     │   └── mobilenet_v4/
@@ -117,10 +130,10 @@ pretrained_path: "checkpoint/fastvit_t12_apple_dist_in1k/model.safetensors"
 
 ```bash
 python scripts/train_with_timm.py \
-    --config configs/fastvit_t12_apple_dist_in1k.yaml
+    --config configs/vae/fastvit_t12_apple_dist_in1k.yaml
 ```
 
-也可以只传配置文件名：
+也可以只传配置文件名（会在 `configs/` 及其任务子目录中查找）：
 
 ```bash
 python scripts/train_with_timm.py --config fastvit_t12_apple_dist_in1k.yaml
@@ -177,9 +190,65 @@ outputs/<timestamp>-<model>-vae<size>/
 ./scripts/run_all_timm.sh fastvit_t12_apple_dist_in1k resnet50_a1_in1k
 ```
 
+## Multitask 多头监督预训练
+
+`scripts/train_multitask.py` 在 timm encoder 的 embedding 上挂多个声明式监督头
+（由 YAML 的 `heads:` 块配置回归/分类头），直接消费 xensim collection2 的 HDF5 数据：
+
+```bash
+python scripts/train_multitask.py \
+    --config configs/multitask/fastvit_t12_physical_collection2.yaml
+```
+
+- `model_arch: physical` 使用 FastViT-T12 + Tiny FPN 的 dense depth/flow +
+  bottleneck 双分支结构（`TactilePhysicalMultiTask`）；DINOv3 配置使用
+  ViT patch token + AttentionPool（`TactileViTPhysicalMultiTask`）；
+- 回归目标（depth/flow 等）训练前在 train split 上计算 mean/std 写入
+  `stats.json` 并做 z-score 归一化；
+- `train: false` 的头训练时不构建，留给评测脚本用冻结 encoder 做 probe。
+
+训练后评测（冻结 encoder；回归头报 MAE/RMSE/R²，分类头报 accuracy/macro-F1，
+`--probe` 时对 eval-only 目标拟合 linear probe）：
+
+```bash
+python scripts/evaluate_multitask.py \
+    --config configs/multitask/fastvit_t12_physical_collection2.yaml \
+    --checkpoint outputs/<exp>/model_best.pt --probe
+```
+
+逐节点三维力场（force_grid，35×20×3）的 probe 评测：
+
+```bash
+python scripts/evaluate_force_probe.py \
+    --config configs/multitask/fastvit_t12_physical_collection2.yaml \
+    --checkpoint outputs/<exp>/model_best.pt \
+    --force-config configs/multitask/force_probe.yaml
+```
+
+相关设计与数据文档：
+
+- `docs/collection2_h5_generation.md`：collection2 HDF5 数据集的生成方式与字段约定；
+- `docs/force_probe_eval_design.md`：force probe 的评测协议、指标定义与已有结果。
+
+注意：FastViT 的 `params.safetensors`（ImageNet 蒸馏权重与 SimMIM 预训练产出）
+是 Flax 命名格式，timm 无法直接加载（全部 unexpected keys，权重不生效），
+需先用 `scripts/convert_fastvit_flax_safetensors.py` 转成 timm 格式；
+`configs/multitask/` 下的配置默认已指向转换后的 `params_timm.safetensors`。
+
 ## 已有配置
 
-`configs/` 下当前包含这些候选 encoder：
+`configs/` 按训练任务分为四个目录：
+
+```text
+configs/
+├── vae/        # VAE 重建（13 个候选 timm backbone，原有任务）
+├── simmim/     # SimMIM 掩码重建预训练（任意 backbone）
+├── mae/        # MAE 掩码重建预训练（仅 ViT：dinov3 small/base/large + CLIP ViT-B/16）
+└── multitask/  # 多头监督预训练（collection2 HDF5：FastViT physical / DINOv3 /
+                #  SimMIM 初始化 / force probe 评测配置）
+```
+
+`vae/` 下的候选 encoder：
 
 ```text
 mobilenetv4_conv_aa_large
@@ -210,7 +279,7 @@ embedding = encoder(x)  # (B, C)
 
 ```bash
 python src/utils/benchmark_feature_extractors.py \
-    --config configs/fastvit_t12_apple_dist_in1k.yaml \
+    --config configs/vae/fastvit_t12_apple_dist_in1k.yaml \
     --warmup 50 \
     --iters 500
 ```
@@ -219,7 +288,7 @@ python src/utils/benchmark_feature_extractors.py \
 
 ```bash
 python src/utils/benchmark_feature_extractors.py \
-    --config configs/fastvit_t12_apple_dist_in1k.yaml \
+    --config configs/vae/fastvit_t12_apple_dist_in1k.yaml \
     --image data/file-000_000000.png \
     --warmup 50 \
     --iters 500
@@ -327,7 +396,7 @@ use_ms_ssim: true
 
 新增 timm backbone：
 
-1. 在 `configs/` 新建 YAML。
+1. 在 `configs/` 对应任务目录下新建 YAML。
 2. 设置 `model` 为 timm 注册名。
 3. 如需本地权重，设置 `pretrained_path`。
 4. 确认 `decoder_hidden_spatial` 为空或与输入尺寸匹配；默认按 `input_size // 32` 推断。

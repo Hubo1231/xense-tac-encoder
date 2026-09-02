@@ -2,8 +2,7 @@
 
 职责：
 - 从 :mod:`src.datasets.crawl` 落盘的原始数据（``data/raw/``）读取；
-- 抽帧（RGB / 深度）、裁剪、标准化、信号标注（参考
-  ``scripts/build_labeled_dataset.py`` 的 compute_frame_signals）；
+- 抽帧（RGB / 深度）、裁剪、标准化、信号标注（compute_frame_signals）；
 - 产出训练数据：``metadata.parquet`` + 图像文件 / 视频帧，
   供 :mod:`src.datasets.labeled_dataset` 的 ``LabeledTactileDataset`` 消费。
 
